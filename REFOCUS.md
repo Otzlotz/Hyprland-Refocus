@@ -49,6 +49,60 @@ Upstream already has a lot of the plumbing. These are the places to start:
   (run-or-raise).
 - Runtime-only rules that can be listed and removed again without touching the config.
 
+## Investigation: touch input vs. seat grabs
+
+**Symptom:** a grab set up via the mouse (an xdg popup/menu, or a
+`hyprland_focus_grab_v1` grab from a bar or launcher) also catches touch input.
+The first touch outside the grab is lost or delivered to the wrong app.
+
+### Trace (touch down while a seat grab is active)
+
+1. `CInputManager::onTouchDown` (`src/managers/input/Touch.cpp`) calls
+   `refocus(TOUCH_COORDS)` and then routes the touch to the surface stored in
+   `m_foundWindowToFocus` / `m_foundSurfaceToFocus` / `m_foundLSToFocus`.
+2. `refocus()` calls `mouseMoveUnified(0, refocus = true, mouse = false, TOUCH_COORDS)`
+   (`src/managers/input/InputManager.cpp`). It first **resets** the three
+   `m_found*ToFocus` members (~L279).
+3. It finds the surface under the finger. If a grab is active and does not accept that
+   surface (~L564), `refocus == true` makes it call `g_pSeatManager->setGrab(nullptr)`
+   and **return early**, before `m_found*ToFocus` is set (~L626).
+4. `CSeatManager::setGrab(nullptr)` (`src/managers/SeatManager.cpp`, ~L756) ends the
+   grab and refocuses. It knows nothing about touch:
+   - `input:follow_mouse = 1` (default): calls `g_pInputManager->refocus()` **without a
+     position**, i.e. at the **mouse cursor**. This nested call fills `m_found*ToFocus`
+     with whatever is under the cursor.
+   - `follow_mouse = 0/2/3`: focuses the popup parent or `refocusLastWindow()`. That
+     never sets `m_found*ToFocus`, so they stay empty.
+5. Back in `onTouchDown`:
+   - `follow_mouse = 1`: the touch down is sent to **the surface under the mouse
+     cursor**, possibly on another monitor. Its surface-local coordinates come from the
+     finger position, so they are wrong too. Every later motion and up event of that
+     finger follows it there.
+   - otherwise: nothing is found, and the touch is dropped (`return; // oops, nothing found.`).
+
+Touches *inside* the grab work. After the first outside touch the grab is gone, so later
+touches work again. Mouse and touch share one grab: `CSeatGrab` only has `m_keyboard` /
+`m_pointer` flags, and the only grab check sits in the pointer path (`mouseMoveUnified`),
+which touch reuses.
+
+For comparison, the mouse: a press outside the grab is sent to the grabbed client (pointer
+focus is held on the grab), and then `simulateMouseMovement()` with `m_hardInput` ends the
+grab (`processMouseDownNormal`, ~L942). The click outside is effectively **consumed**; the
+app underneath never sees it.
+
+### Fix options
+
+- **A: consume the touch, like the mouse.** In the grab branch of `mouseMoveUnified`, when
+  the refocus came with an explicit position (touch), keep `m_found*ToFocus` empty after
+  `setGrab(nullptr)` and do not let the cursor-based refocus fill them. The touch only
+  closes the popup.
+- **B: pass the touch through.** After `setGrab(nullptr)`, redo the pick at the touch
+  position, so the touch both closes the popup and reaches the app under the finger.
+- Either way, the bug where a touch goes to the surface under the mouse cursor must go.
+- Tests: `hyprtester/` can already inject touch (see `hyprtester/src/tests/main/workspace_swipe.cpp`);
+  a regression test would open a popup/focus grab, touch outside it, and check which
+  client receives the touch.
+
 ## Development setup
 
 ### Branches and remotes

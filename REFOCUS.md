@@ -154,6 +154,27 @@ make debug        # or: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmak
 Testing a debug build in a nested session: run `./build/Hyprland` from inside a running
 Hyprland session (it opens as a window).
 
+### CI (GitHub Actions)
+
+`.github/workflows/ci.yaml` runs on every push (and on PRs from forks), in an Arch container:
+
+- **Code style:** `make format-check` with Arch's current clang-format. Fix locally with
+  `make format-fix`; an older clang-format rejects keys in `.clang-format`.
+- **Build & unit tests:** release build with `-Werror` and tests enabled, then
+  `build/hyprland_gtests`. The binaries are uploaded as a workflow artifact (kept 14 days),
+  so a change can be tried without building it locally.
+
+The Hypr libraries (hyprutils, aquamarine, hyprgraphics, hyprcursor, hyprlang, hyprwire,
+hyprwayland-scanner) are built from the revisions pinned in `flake.lock`
+(`.github/actions/setup_base`). Upstream builds them from their latest `main`, which
+would drift away from this fork's 0.57.0 base. After merging upstream, update
+`flake.lock` (e.g. take upstream's) so CI follows.
+
+Not run in CI (yet): hyprtester integration tests (upstream runs them only in a Nix VM),
+Nix builds. Removed upstream-only workflows: issue/PR/discussion moderation, vouching,
+code owners, labeler, commit-title check, AI translation check, man-page auto-commit,
+release tarballs, Nix input updates.
+
 ### Code style
 
 Follow `AGENTS.md` (clang-format, naming `CClass` / `SStruct` / `m_member`, hyprutils

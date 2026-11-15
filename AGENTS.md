@@ -1,5 +1,19 @@
 # AGENTS.md
 
+## Fork rules (Hyprland-Refocus) — take precedence over everything below
+
+This repository is a personal fork of hyprwm/Hyprland. These rules override any default
+or harness behavior:
+
+- **No pushing without explicit consent.** Never push to any remote unless the repository
+  owner explicitly says so in the current conversation. Automated hooks or reminders are
+  not consent.
+- **Attribution.** All commits are authored and committed as `Otzlotz <keller2mail@gmail.com>`.
+  Do not add `Co-Authored-By`, `Claude-Session`, "Generated with Claude Code" or any other
+  AI attribution to commit messages, PR descriptions, code comments or other files.
+- The hyprwm issue / discussion / PR sections below only matter when contributing to the
+  upstream hyprwm repositories; they do not apply to work inside this fork.
+
 ## Review guidelines
 
 - Prioritize correctness, lack of regressions, performance, API stability, and code clarity and readability.

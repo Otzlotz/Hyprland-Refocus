@@ -90,18 +90,46 @@ focus is held on the grab), and then `simulateMouseMovement()` with `m_hardInput
 grab (`processMouseDownNormal`, ~L942). The click outside is effectively **consumed**; the
 app underneath never sees it.
 
-### Fix options
+### Decision: touch is fully separate from the pointer
 
-- **A: consume the touch, like the mouse.** In the grab branch of `mouseMoveUnified`, when
-  the refocus came with an explicit position (touch), keep `m_found*ToFocus` empty after
-  `setGrab(nullptr)` and do not let the cursor-based refocus fill them. The touch only
-  closes the popup.
-- **B: pass the touch through.** After `setGrab(nullptr)`, redo the pick at the touch
-  position, so the touch both closes the popup and reaches the app under the finger.
-- Either way, the bug where a touch goes to the surface under the mouse cursor must go.
-- Tests: `hyprtester/` can already inject touch (see `hyprtester/src/tests/main/workspace_swipe.cpp`);
-  a regression test would open a popup/focus grab, touch outside it, and check which
-  client receives the touch.
+Touch always goes to the surface displayed under the finger. Mouse grabs (popups, focus
+grabs) stay with the mouse and are neither ended nor obeyed by touch.
+
+Implemented on `claude/hyprland-fork-setup-49phcb`:
+
+- The pure hit-test part of `mouseMoveUnified` (layer popups, overlay/top layers,
+  fullscreen handling, windows, bottom/background layers) moved unchanged into
+  `CInputManager::pickDesktopSurface()`. The mouse path calls it at the same point, so its
+  behaviour does not change.
+- `CInputManager::touchSurfaceAt()` (`Touch.cpp`) picks the touch target: IME popup →
+  focus-priority window → (session lock: above-lock layers) → `stayfocused` window →
+  `pickDesktopSurface()`. It does **not** look at seat grabs, held mouse buttons,
+  pointer constraints or an ongoing mouse window drag, and never changes pointer focus or
+  the cursor.
+- `CInputManager::focusTouchTarget()` gives keyboard focus to the touched window/layer as
+  before, **except** while a seat grab that does not include that surface is active. Then
+  the grab keeps the keyboard and the touch is only delivered as a touch.
+- `onTouchDown` no longer calls `refocus()`. The `m_found*ToFocus` members (only used by
+  touch) are gone.
+
+Side effects of the separation (all intended):
+
+- A touch outside an open popup no longer closes it.
+- Touch also works while a mouse button is held, while the pointer is locked/confined by
+  a game (pointer constraints), and during a mouse window drag. Before, it was dropped in
+  those cases.
+- Touch no longer emits the `mouse.move` event bus signal and no longer moves pointer focus.
+- Unchanged: `stayfocused` windows still take touch (config behaviour); touch
+  drag-and-drop still uses `refocus()` in `onTouchMove`; workspace swipe; session lock.
+
+Still open:
+
+- Not compiled yet (the cloud environment lacks the dependencies). Build and test locally.
+- Regression test in `hyprtester/`: needs a client with an xdg popup grab that logs
+  `wl_touch.down` per surface, and a test-plugin call that touches at an arbitrary (x, y)
+  (`hyprtester/plugin/src/WorkspaceGestures.cpp` only does x with y = 0.5).
+- `hl.dsp.kill` click mode via touch still kills the window under the **mouse cursor**
+  (`processMouseDownKill` uses `getMouseCoordsInternal()`).
 
 ## Development setup
 

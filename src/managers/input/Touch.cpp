@@ -1,9 +1,11 @@
 #include "InputManager.hpp"
 #include "../SessionLockManager.hpp"
 #include "../../protocols/SessionLock.hpp"
+#include "../../protocols/LayerShell.hpp"
 #include "../../Compositor.hpp"
 #include "../../desktop/view/LayerSurface.hpp"
 #include "../../desktop/state/FocusState.hpp"
+#include "../../desktop/state/ViewState.hpp"
 #include "../../config/ConfigValue.hpp"
 #include "../../output/Monitor.hpp"
 #include "../../state/MonitorState.hpp"
@@ -13,6 +15,8 @@
 #include "../../protocols/core/DataDevice.hpp"
 #include "debug/log/Logger.hpp"
 #include "UnifiedWorkspaceSwipeGesture.hpp"
+
+#include <ranges>
 
 void CInputManager::onTouchDown(ITouch::SDownEvent e) {
     m_lastInputTouch = true;
@@ -59,7 +63,10 @@ void CInputManager::onTouchDown(ITouch::SDownEvent e) {
 
     m_touchData.lastTouchPos = TOUCH_COORDS;
 
-    refocus(TOUCH_COORDS);
+    // Touch is routed on its own: it never moves pointer focus and ignores seat grabs, which belong to the mouse.
+    const auto TARGET = touchSurfaceAt(TOUCH_COORDS, PMONITOR);
+    m_lastInputMouse  = false;
+    focusTouchTarget(TARGET, PMONITOR);
 
     if (m_clickBehavior == CLICKMODE_KILL) {
         IPointer::SButtonEvent e;
@@ -69,7 +76,7 @@ void CInputManager::onTouchDown(ITouch::SDownEvent e) {
     }
 
     // TODO: Don't swipe if you touched a floating window.
-    if (*PSWIPETOUCH && (m_foundLSToFocus.expired() || m_foundLSToFocus->m_layer <= 1) && !g_pSessionLockManager->isSessionLocked()) {
+    if (*PSWIPETOUCH && (!TARGET.layer || TARGET.layer->m_layer <= 1) && !g_pSessionLockManager->isSessionLocked()) {
         const auto   PWORKSPACE  = PMONITOR->m_activeWorkspace;
         const auto   STYLE       = PWORKSPACE->m_renderOffset->getStyle();
         const bool   VERTANIMS   = STYLE == "slidevert" || STYLE.starts_with("slidefadevert");
@@ -109,7 +116,7 @@ void CInputManager::onTouchDown(ITouch::SDownEvent e) {
     }
 
     // could have abovelock surface, thus only use lock if no ls found
-    if (g_pSessionLockManager->isSessionLocked() && m_foundLSToFocus.expired()) {
+    if (g_pSessionLockManager->isSessionLocked() && !TARGET.layer) {
         m_touchData.touchFocusLockSurface = g_pSessionLockManager->getSessionLockSurfaceForMonitor(PMONITOR->m_id);
         if (!m_touchData.touchFocusLockSurface)
             LOG(Log::WARN, "The session is locked but can't find a lock surface");
@@ -117,9 +124,9 @@ void CInputManager::onTouchDown(ITouch::SDownEvent e) {
             m_touchData.touchFocusSurface = m_touchData.touchFocusLockSurface->surface->surface();
     } else {
         m_touchData.touchFocusLockSurface.reset();
-        m_touchData.touchFocusWindow  = m_foundWindowToFocus;
-        m_touchData.touchFocusSurface = m_foundSurfaceToFocus;
-        m_touchData.touchFocusLS      = m_foundLSToFocus;
+        m_touchData.touchFocusWindow  = TARGET.window;
+        m_touchData.touchFocusSurface = TARGET.surface;
+        m_touchData.touchFocusLS      = TARGET.layer;
     }
 
     Vector2D local;
@@ -150,6 +157,90 @@ void CInputManager::onTouchDown(ITouch::SDownEvent e) {
         return; // oops, nothing found.
 
     g_pSeatManager->sendTouchDown(m_touchData.touchFocusSurface.lock(), e.timeMs, e.touchID, local);
+}
+
+SSurfacePick CInputManager::touchSurfaceAt(const Vector2D& coords, PHLMONITOR monitor) {
+    SSurfacePick pick;
+
+    // IME popups are always on top
+    if (const auto POPUP = m_relay.popupFromCoords(coords); POPUP) {
+        pick.surface    = POPUP->getSurface();
+        pick.surfacePos = POPUP->globalBox().pos();
+        return pick;
+    }
+
+    // windows with focus priority, e.g. permission popups
+    pick.window = Desktop::viewState()->hitTest().windowAt(coords, Desktop::View::FOCUS_PRIORITY);
+    if (pick.window)
+        pick.surface = Desktop::viewState()->hitTest().windowSurfaceAt(coords, pick.window, pick.surfaceCoords);
+
+    if (pick.surface)
+        return pick;
+
+    if (g_pSessionLockManager->isSessionLocked()) {
+        // only surfaces allowed above the lockscreen, otherwise the caller uses the lock surface
+        pick.window.reset();
+        for (auto& lsl : monitor->m_layerSurfaceLayers | std::views::reverse) {
+            pick.surface = Desktop::viewState()->hitTest().layerSurfaceAt(coords, &lsl, &pick.surfaceCoords, &pick.layer, true);
+            if (pick.surface)
+                break;
+        }
+
+        return pick;
+    }
+
+    // stayfocused windows (and dispatcher-forced focus) take touch the same way they take the pointer
+    PHLWINDOW forced = m_forcedFocus.lock();
+    if (!forced)
+        forced = Desktop::viewState()->query().forceFocus().runWindow();
+
+    if (forced) {
+        pick.window = forced;
+        if (!forced->backend().isX11())
+            pick.surface = Desktop::viewState()->hitTest().windowSurfaceAt(coords, forced, pick.surfaceCoords);
+        if (!pick.surface) {
+            pick.surfacePos = forced->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+            pick.surface    = forced->wlSurface()->resource();
+        }
+
+        return pick;
+    }
+
+    if (!pickDesktopSurface(coords, monitor, pick))
+        return {};
+
+    return pick;
+}
+
+void CInputManager::focusTouchTarget(const SSurfacePick& pick, PHLMONITOR monitor) {
+    if (g_pSessionLockManager->isSessionLocked() && !pick.window) {
+        const auto LOCKSURFACE = g_pSessionLockManager->getSessionLockSurfaceForMonitor(monitor->m_id);
+        Desktop::focusState()->rawSurfaceFocus(LOCKSURFACE ? LOCKSURFACE->surface->surface() : nullptr);
+        return;
+    }
+
+    if (!pick.surface)
+        return;
+
+    // an active grab (popup, focus grab) keeps the keyboard; touch only delivers the touch itself
+    if (g_pSeatManager->m_seatGrab && !g_pSeatManager->m_seatGrab->accepts(pick.surface))
+        return;
+
+    if (pick.window) {
+        if (Desktop::focusState()->window() != pick.window)
+            Desktop::focusState()->rawWindowFocus(pick.window, Desktop::FOCUS_REASON_CLICK, pick.surface);
+        else
+            Desktop::focusState()->rawSurfaceFocus(pick.surface, pick.window);
+
+        if (!g_pSeatManager->m_state.keyboardFocus)
+            Desktop::focusState()->rawWindowFocus(pick.window, Desktop::FOCUS_REASON_CLICK, pick.surface);
+        return;
+    }
+
+    static auto PFOLLOWMOUSE = CConfigValue<Config::INTEGER>("input:follow_mouse");
+
+    if (pick.layer && pick.layer->m_layerSurface->m_current.keyboardInteractivity != ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE && *PFOLLOWMOUSE != 3)
+        Desktop::focusState()->rawSurfaceFocus(pick.surface);
 }
 
 void CInputManager::onTouchUp(ITouch::SUpEvent e, SP<ITouch> device) {

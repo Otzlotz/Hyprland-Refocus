@@ -99,6 +99,15 @@ static const float MATRICES[8][6] = {{// normal
                                      {// flipped + rotation 270°
                                       0, -1, 1, -1, 0, 1}};
 
+// Result of a surface hit-test. Shared by pointer and touch routing.
+struct SSurfacePick {
+    SP<CWLSurfaceResource> surface;
+    Vector2D               surfaceCoords;
+    Vector2D               surfacePos = Vector2D(-1337, -1337); // -1337: use surfaceCoords as surface-local
+    PHLWINDOW              window;
+    PHLLS                  layer;
+};
+
 class CInputManager {
   public:
     CInputManager();
@@ -272,16 +281,16 @@ class CInputManager {
     uint32_t           m_capabilities = 0;
 
     void               mouseMoveUnified(uint32_t, bool refocus = false, bool mouse = false, std::optional<Vector2D> overridePos = std::nullopt, bool pointerOnly = false);
+    bool               pickDesktopSurface(const Vector2D& coords, PHLMONITOR monitor, SSurfacePick& pick);
     void               recheckMouseWarpOnMouseInput();
 
     SP<CTabletTool>    ensureTabletToolPresent(SP<Aquamarine::ITabletTool>);
 
     void               applyConfigToKeyboard(SP<IKeyboard>);
 
-    // this will be set after a refocus()
-    WP<CWLSurfaceResource> m_foundSurfaceToFocus;
-    PHLLSREF               m_foundLSToFocus;
-    PHLWINDOWREF           m_foundWindowToFocus;
+    // touch routing, independent of pointer focus and seat grabs
+    SSurfacePick touchSurfaceAt(const Vector2D& coords, PHLMONITOR monitor);
+    void         focusTouchTarget(const SSurfacePick& pick, PHLMONITOR monitor);
 
     // used for warping back after non-mouse input
     Vector2D m_lastMousePos   = {};

@@ -189,6 +189,42 @@ make debug        # or: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmak
 Testing a debug build in a nested session: run `./build/Hyprland` from inside a running
 Hyprland session (it opens as a window).
 
+### Running it next to the distro's Hyprland
+
+Install the fork into its own prefix and add a login entry, then pick "Hyprland Refocus" or
+"Hyprland" in the display manager (SDDM, GDM, greetd, ...):
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/hyprland-refocus -DREFOCUS_SESSION=ON
+cmake --build build
+sudo cmake --install build
+```
+
+- Everything goes to `/opt/hyprland-refocus` except `hyprland-refocus.desktop`, which goes to
+  `/usr/share/wayland-sessions` (`REFOCUS_SESSION_DIR`), the only place display managers look.
+  The distro's Hyprland in `/usr` is not touched. Don't install the fork to `/usr`: it would
+  overwrite the distro's files.
+- The entry runs `/opt/hyprland-refocus/bin/start-hyprland --path /opt/hyprland-refocus/bin/Hyprland`.
+  Without `--path`, `start-hyprland` would start whatever `Hyprland` is first in `PATH`.
+- Uninstall: delete `/opt/hyprland-refocus` and `/usr/share/wayland-sessions/hyprland-refocus.desktop`.
+
+Shells (Noctalia, other Quickshell shells, Waybar, ...): the fork is upstream Hyprland 0.57 plus
+its additions, and looks exactly like Hyprland to them. The entry keeps `DesktopNames=Hyprland`
+(so `XDG_CURRENT_DESKTOP=Hyprland`), the binary is still called `Hyprland`, and it uses the same
+`HYPRLAND_INSTANCE_SIGNATURE` IPC sockets and Wayland protocols. Things to know:
+
+- Config: 0.57 reads only `~/.config/hypr/hyprland.lua`. If the distro's Hyprland is older and uses
+  `hyprland.conf`, the two don't collide (each reads its own file), but the fork needs its own
+  `hyprland.lua`, including the line that starts the shell (e.g. `hl.exec_cmd("qs -c noctalia-shell")`
+  or however you start it today). Otherwise the fork session comes up without the shell.
+- A shell that still sends old-style IPC commands (`dispatch workspace 3`) needs to support
+  Hyprland 0.57's Lua syntax. That is an upstream 0.57 change, not one of the fork's, so it
+  applies equally to a distro Hyprland 0.57.
+- `hyprctl` from either install works with both compositors; the fork's additions live in the
+  compositor.
+- Plugins (`hyprpm`) are built per Hyprland version and need their own builds for the fork.
+
 ### CI (GitHub Actions)
 
 `.github/workflows/ci.yaml` runs on every push (and on PRs from forks), in an Arch container:

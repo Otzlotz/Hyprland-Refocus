@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Hyprland Refocus
+Comment=Hyprland built from the Hyprland-Refocus fork
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/start-hyprland --path @CMAKE_INSTALL_FULL_BINDIR@/Hyprland
+Type=Application
+DesktopNames=Hyprland
+Keywords=tiling;wayland;compositor;

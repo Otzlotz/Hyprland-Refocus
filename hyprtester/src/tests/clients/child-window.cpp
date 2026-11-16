@@ -25,8 +25,7 @@ static bool waitForWindow(SP<CProcess> proc, int windowsBefore) {
         counter++;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-        // generous: CI renders in software and can take several seconds to map a window
-        if (counter > 150)
+        if (counter > 50)
             return false;
     }
 

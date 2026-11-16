@@ -326,6 +326,8 @@ int main(int argc, char** argv) {
             readBuf[bytesRead] = 0;
 
             parseRequest(state, std::string{readBuf.data()}, window);
+            // requests are otherwise only flushed when an event arrives, which may never happen
+            wl_display_flush(state.display);
         }
     }
 

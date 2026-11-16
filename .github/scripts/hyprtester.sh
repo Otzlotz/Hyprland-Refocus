@@ -10,6 +10,20 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOGS="${1:?log output dir}"
 TESTER=hyprtester
 
+# The runner VM has its own display adapter next to vkms. Hyprland would drive both, and
+# the extra output shifts monitor IDs that the tests expect (upstream's VM has one GPU).
+# Depending on the kernel, vkms is a platform or a "faux" device; match its sysfs path.
+VKMS_CARD=""
+for card in /sys/class/drm/card[0-9]; do
+  syspath="$(readlink -f "$card")"
+  driver="$(basename "$(readlink -f "$card/device/driver" 2>/dev/null)" 2>/dev/null || true)"
+  echo "$(basename "$card"): $syspath (driver: ${driver:-none})"
+  [[ "$syspath" == */vkms/* || "$driver" == "vkms" ]] || continue
+  VKMS_CARD="/dev/dri/$(basename "$card")"
+done
+[[ -n "$VKMS_CARD" ]] || { echo "no vkms DRM device found" >&2; exit 1; }
+echo "using vkms device $VKMS_CARD"
+
 echo "::group::dependencies"
 "$REPO/.github/scripts/setup-deps.sh" --xorg
 git config --global --add safe.directory '*'
@@ -35,15 +49,6 @@ chmod -R a+rwX "$REPO"
 chmod a+rw /dev/dri/*
 ls -l /dev/dri
 
-# The runner VM has its own display adapter next to vkms. Hyprland would drive both, and
-# the extra output shifts monitor IDs that the tests expect (upstream's VM has one GPU).
-VKMS_CARD=""
-for card in /sys/class/drm/card[0-9]*; do
-  [[ "$(basename "$(readlink -f "$card/device/driver")")" == "vkms" ]] || continue
-  VKMS_CARD="/dev/dri/$(basename "$card")"
-done
-[[ -n "$VKMS_CARD" ]] || { echo "no vkms DRM device found" >&2; exit 1; }
-echo "using vkms device $VKMS_CARD"
 
 RUNTIME=/tmp/rt
 mkdir -p "$RUNTIME" "$LOGS"

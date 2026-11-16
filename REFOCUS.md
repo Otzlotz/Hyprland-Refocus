@@ -223,6 +223,18 @@ its additions, and looks exactly like Hyprland to them. The entry keeps `Desktop
   applies equally to a distro Hyprland 0.57.
 - `hyprctl` from either install works with both compositors; the fork's additions live in the
   compositor.
+- Sharing one `hyprland.lua` between both sessions (e.g. distro Hyprland 0.57.2 and the fork):
+  guard fork-only features, which upstream rejects, with the fork's marker:
+
+  ```lua
+  if hl.refocus then
+    hl.bind("SUPER + B", hl.dsp.exec_cmd("firefox", { workspace = "2", match = { class = "firefox" } }))
+  end
+  ```
+
+  `hl.refocus` is `nil` on upstream Hyprland and `{ api = 1 }` on the fork (`api` goes up when
+  fork-only features change). `hl.version()` is left alone on purpose: hyprpm, plugins and
+  shells parse it. The marker is not in the generated Lua type stubs (they only list functions).
 - Plugins (`hyprpm`) are built per Hyprland version and need their own builds for the fork.
 
 ### CI (GitHub Actions)

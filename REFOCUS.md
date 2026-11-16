@@ -163,6 +163,14 @@ Hyprland session (it opens as a window).
 - **Build & unit tests:** release build with `-Werror` and tests enabled, then
   `build/hyprland_gtests`. The binaries are uploaded as a workflow artifact (kept 14 days),
   so a change can be tried without building it locally.
+- **Integration tests (hyprtester):** Hyprland needs a DRM device for buffer allocation
+  even in headless mode, and GitHub runners have no GPU. The job loads the `vkms` virtual
+  display driver on the runner, then builds (Debug) and runs hyprtester as a normal user in
+  a privileged Arch container with Mesa software rendering and `seatd`
+  (`.github/scripts/hyprtester.sh`). Upstream runs the same tests in a Nix VM with a
+  virtio GPU instead. Logs (hyprtester and Hyprland) are uploaded as an artifact.
+
+Dependency setup is shared by both jobs: `.github/scripts/setup-deps.sh`.
 
 The Hypr libraries (hyprutils, aquamarine, hyprgraphics, hyprcursor, hyprlang, hyprwire,
 hyprwayland-scanner) are built from the revisions pinned in `flake.lock`
@@ -170,8 +178,7 @@ hyprwayland-scanner) are built from the revisions pinned in `flake.lock`
 would drift away from this fork's 0.57.0 base. After merging upstream, update
 `flake.lock` (e.g. take upstream's) so CI follows.
 
-Not run in CI (yet): hyprtester integration tests (upstream runs them only in a Nix VM),
-Nix builds. Removed upstream-only workflows: issue/PR/discussion moderation, vouching,
+Not run in CI: Nix builds. Removed upstream-only workflows: issue/PR/discussion moderation, vouching,
 code owners, labeler, commit-title check, AI translation check, man-page auto-commit,
 release tarballs, Nix input updates.
 

@@ -90,3 +90,39 @@ jobs:
           name: Hyprland-${{ github.sha }}
           path: Hyprland.tar.xz
           retention-days: 14
+
+  hyprtester:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
+    name: Integration tests (hyprtester)
+    # Not in a job container: the vkms kernel module has to be loaded on the host first,
+    # then an Arch container is started by hand with the resulting /dev/dri.
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Load virtual display driver (vkms)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" || echo "linux-modules-extra not available, trying vkms anyway"
+          sudo modprobe vkms
+          ls -l /dev/dri
+
+      - name: Build and run hyprtester
+        run: |
+          docker run --rm --privileged \
+            -v /dev/dri:/dev/dri \
+            -v "$GITHUB_WORKSPACE:/work" \
+            archlinux \
+            /work/.github/scripts/hyprtester.sh /work/test-logs
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hyprtester-logs-${{ github.sha }}
+          path: test-logs/
+          retention-days: 14

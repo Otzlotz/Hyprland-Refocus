@@ -75,9 +75,12 @@ hyprctl dispatch 'hl.dsp.exec_cmd("firefox", { workspace = "3", match = { class 
 
 - Still one-shot and still expires after one minute.
 - Without `match`, nothing changes (existing configs are unaffected).
-- Trade-off: a matching window you open yourself within that minute is taken instead.
-- Unknown match keys or wrong value types are reported as errors.
-- Test: `main:execRulesMatchFallback` (`hyprtester/src/tests/main/window.cpp`).
+- Trade-off: a matching window you open yourself within that minute is taken instead. The same
+  goes for a matching window that hides and shows itself again (it is mapped anew).
+- Errors instead of silently doing nothing: unknown match keys, wrong value types, an empty
+  `match`, and a `match` without any effect to apply.
+- Tests: `main:execRulesMatchFallback` (workspace, one-shot, errors) and
+  `main:execRulesMatchFallbackMonitor` (monitor), in `hyprtester/src/tests/main/window.cpp`.
 
 ## Investigation: touch input vs. seat grabs
 

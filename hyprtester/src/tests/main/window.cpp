@@ -1609,6 +1609,31 @@ TEST_CASE(execRulesMatchFallback) {
     EXPECT_NOT_CONTAINS(getFromSocket("/activewindow"), "workspace: 3 (3)");
 
     EXPECT_CONTAINS(getFromSocket("/dispatch hl.dsp.exec_cmd('true', { workspace = '3', match = { not_a_property = 'x' } })"), "unknown match property");
+    EXPECT_CONTAINS(getFromSocket("/dispatch hl.dsp.exec_cmd('true', { workspace = '3', match = {} })"), "match is empty");
+    EXPECT_CONTAINS(getFromSocket("/dispatch hl.dsp.exec_cmd('true', { match = { class = 'kitty_exec_handoff' } })"), "match needs at least one effect");
+}
+
+// Same as above, placing the window on another monitor instead of a workspace.
+TEST_CASE(execRulesMatchFallbackMonitor) {
+    static constexpr const char* TEST_OUTPUT = "HYPRTEST-EXEC-MATCH";
+
+    getFromSocket(std::format("/output remove {}", TEST_OUTPUT));
+    OK(getFromSocket(std::format("/eval hl.monitor({{ output = '{}', mode = '1920x1080@60', position = 'auto-right', scale = '1' }})", TEST_OUTPUT)));
+    OK(getFromSocket(std::format("/output create headless {}", TEST_OUTPUT)));
+
+    Hyprutils::Utils::CScopeGuard cleanup([] {
+        Tests::killAllWindows();
+        getFromSocket("/dispatch hl.dsp.focus({ monitor = 'HEADLESS-2' })");
+        getFromSocket(std::format("/output remove {}", TEST_OUTPUT));
+    });
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ monitor = 'HEADLESS-2' })"));
+    OK(getFromSocket(std::format("/dispatch hl.dsp.exec_cmd('true', {{ monitor = '{}', match = {{ class = 'kitty_exec_monitor' }} }})", TEST_OUTPUT)));
+
+    SPAWN_KITTY("kitty_exec_monitor");
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:kitty_exec_monitor' })"));
+    EXPECT_CONTAINS(getFromSocket("/activeworkspace"), std::format("on monitor {}:", TEST_OUTPUT));
 }
 
 TEST_CASE(pinnedRetainsPositionOnWorkspaceChange) {

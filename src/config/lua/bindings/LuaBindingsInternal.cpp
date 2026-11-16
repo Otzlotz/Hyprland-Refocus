@@ -546,6 +546,7 @@ static std::expected<SP<Desktop::Rule::CWindowRule>, std::string> buildMatchRule
 
     const int matchIdx = lua_absindex(L, idx);
     auto      rule     = makeShared<Desktop::Rule::CWindowRule>("__exec_fallback");
+    size_t    matches  = 0;
 
     lua_pushnil(L);
     while (lua_next(L, matchIdx) != 0) {
@@ -574,8 +575,12 @@ static std::expected<SP<Desktop::Rule::CWindowRule>, std::string> buildMatchRule
         }
 
         rule->registerMatch(*PROP, value);
+        ++matches;
         lua_pop(L, 1);
     }
+
+    if (matches == 0)
+        return std::unexpected("match is empty, it needs at least one property, e.g. { class = \"firefox\" }");
 
     return rule;
 }
@@ -649,6 +654,9 @@ std::expected<SP<Desktop::Rule::CWindowRule>, int> Internal::buildRuleFromTable(
             hasRuleEffects = true;
             lua_pop(L, 1);
         }
+
+        if (fallback && !hasRuleEffects)
+            return std::unexpected(Internal::configError(L, "buildRuleFromTable: match needs at least one effect to apply, e.g. workspace or monitor"));
 
         if (!hasRuleEffects)
             return nullptr;

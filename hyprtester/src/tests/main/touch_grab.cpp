@@ -32,6 +32,19 @@ TEST_CASE(touchIgnoresMouseGrab) {
         assert(s.keyboard_focus == 'touch_grab_a', 'keyboard focus left the grab for "' .. s.keyboard_focus .. '"')
     )"));
 
+    // no grab: the tap focuses the touched window for the keyboard, the pointer stays where the cursor is
+    OK(getFromSocket(R"(/eval
+        local p = hl.plugin.test
+        p.touch_grab_setup('touch_grab_a', false)
+        local ok, s = pcall(p.touch_grab_tap, 'touch_grab_b')
+        p.touch_grab_reset()
+        assert(ok, s)
+        assert(s.touch_focus == 'touch_grab_b', 'touch went to "' .. s.touch_focus .. '"')
+        assert(s.keyboard_focus == 'touch_grab_b', 'keyboard focus is on "' .. s.keyboard_focus .. '", expected the touched window')
+        assert(s.pointer_focus == 'touch_grab_a', 'pointer focus moved to "' .. s.pointer_focus .. '"')
+        assert(not s.grab_active, 'no grab was set up')
+    )"));
+
     // tap inside the grab: delivered normally, grab stays
     OK(getFromSocket(R"(/eval
         local p = hl.plugin.test

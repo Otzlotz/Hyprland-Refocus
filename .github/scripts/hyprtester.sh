@@ -10,10 +10,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOGS="${1:?log output dir}"
 TESTER=hyprtester
 
-git config --global --add safe.directory '*'
-
 echo "::group::dependencies"
 "$REPO/.github/scripts/setup-deps.sh" --xorg
+git config --global --add safe.directory '*'
 # runtime needs of the tests: software GL, a seat, and the clients the tests spawn
 pacman --noconfirm --noprogressbar -S --needed mesa seatd kitty xorg-xeyes wl-clipboard
 echo "::endgroup::"

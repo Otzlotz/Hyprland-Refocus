@@ -106,9 +106,12 @@ jobs:
 
       - name: Load virtual display driver (vkms)
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" || echo "linux-modules-extra not available, trying vkms anyway"
-          sudo modprobe vkms
+          # built into the runner kernel; only older images need linux-modules-extra
+          sudo modprobe vkms || {
+            sudo apt-get update -q
+            sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+            sudo modprobe vkms
+          }
           ls -l /dev/dri
 
       - name: Build and run hyprtester

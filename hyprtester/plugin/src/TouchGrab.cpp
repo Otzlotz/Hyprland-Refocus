@@ -63,10 +63,12 @@ namespace TouchGrab {
         g_grab.reset();
     }
 
-    // touch_grab_setup(grabbedClass): cursor onto the window, then a pointer + keyboard seat grab
-    // that only accepts that window, like the grab an xdg popup opened with the mouse creates.
+    // touch_grab_setup(grabbedClass[, grab = true]): cursor onto the window, then a pointer + keyboard
+    // seat grab that only accepts that window, like the grab an xdg popup opened with the mouse
+    // creates. With grab = false only the cursor and the touch device are set up.
     static int luaSetup(lua_State* L) {
         const std::string CLS     = luaL_checkstring(L, 1);
+        const bool        GRAB    = lua_isnoneornil(L, 2) || lua_toboolean(L, 2);
         const auto        WINDOW  = windowByClass(CLS);
         const auto        MONITOR = WINDOW ? WINDOW->m_monitor.lock() : nullptr;
         if (!WINDOW || !MONITOR || !WINDOW->wlSurface() || !WINDOW->wlSurface()->resource())
@@ -76,11 +78,13 @@ namespace TouchGrab {
 
         Pointer::pointerController()->warpTo(WINDOW->getWindowMainSurfaceBox().middle(), true);
 
-        g_grab             = makeShared<CSeatGrab>();
-        g_grab->m_pointer  = true;
-        g_grab->m_keyboard = true;
-        g_grab->add(WINDOW->wlSurface()->resource());
-        g_pSeatManager->setGrab(g_grab);
+        if (GRAB) {
+            g_grab             = makeShared<CSeatGrab>();
+            g_grab->m_pointer  = true;
+            g_grab->m_keyboard = true;
+            g_grab->add(WINDOW->wlSurface()->resource());
+            g_pSeatManager->setGrab(g_grab);
+        }
 
         g_touch                = makeShared<CGrabTestTouch>();
         g_touch->m_self        = g_touch;

@@ -14,8 +14,9 @@ permissions:
 
 jobs:
   format:
-    # PRs from branches of this repo are already covered by their push run
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
+    # PRs from branches of this repo are already covered by their push run. (head.repo.fork
+    # would not work: this whole repository is a GitHub fork of hyprwm/Hyprland.)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: Code style
     runs-on: ubuntu-latest
     container:
@@ -35,7 +36,7 @@ jobs:
           make format-check
 
   build:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: Build & unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 150
@@ -92,7 +93,7 @@ jobs:
           retention-days: 14
 
   hyprtester:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: Integration tests (hyprtester)
     # Not in a job container: the vkms kernel module has to be loaded on the host first,
     # then an Arch container is started by hand with the resulting /dev/dri.

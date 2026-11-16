@@ -163,12 +163,24 @@ Hyprland session (it opens as a window).
 - **Build & unit tests:** release build with `-Werror` and tests enabled, then
   `build/hyprland_gtests`. The binaries are uploaded as a workflow artifact (kept 14 days),
   so a change can be tried without building it locally.
-- **Integration tests (hyprtester):** Hyprland needs a DRM device for buffer allocation
-  even in headless mode, and GitHub runners have no GPU. The job loads the `vkms` virtual
-  display driver on the runner, then builds (Debug) and runs hyprtester as a normal user in
-  a privileged Arch container with Mesa software rendering and `seatd`
-  (`.github/scripts/hyprtester.sh`). Upstream runs the same tests in a Nix VM with a
-  virtio GPU instead. Logs (hyprtester and Hyprland) are uploaded as an artifact.
+- **Integration tests (hyprtester):** all 325 tests pass (first green run: run 11).
+  Hyprland needs a DRM device for buffer allocation even in headless mode, and GitHub
+  runners have no GPU. Upstream runs these tests in a Nix VM with a virtio GPU instead.
+  The job (`.github/scripts/hyprtester.sh`):
+  - loads the `vkms` virtual display driver on the runner, then starts a privileged Arch
+    container with `/dev/dri` and 1 GB of `/dev/shm` (Docker's default is 64 MB);
+  - points aquamarine at the vkms card only (`AQ_DRM_DEVICES`). The runner also has its
+    own display adapter, and a second output shifts the monitor IDs the tests expect;
+  - installs Mesa (software GL), `seatd`, the clients the tests spawn (kitty, xeyes,
+    wl-clipboard) and a font (kitty aborts without one);
+  - builds Debug with tests and runs hyprtester as an unprivileged user (Hyprland
+    refuses to run as root);
+  - on failure, repeats each failed test's output and the relevant part of Hyprland's
+    log at the end of the job log. Full logs are uploaded as an artifact.
+
+  Fix found along the way: the `child-window` test client only flushed its Wayland
+  requests when an event arrived, so `clients:childWindow` failed at random
+  (`hyprtester/clients/child-window.cpp`). Worth reporting upstream if it bites there too.
 
 Dependency setup is shared by both jobs: `.github/scripts/setup-deps.sh`.
 

@@ -116,7 +116,8 @@ jobs:
 
       - name: Build and run hyprtester
         run: |
-          docker run --rm --privileged \
+          # Docker limits /dev/shm to 64 MB; test clients put their buffers there
+          docker run --rm --privileged --shm-size=1g \
             -v /dev/dri:/dev/dri \
             -v "$GITHUB_WORKSPACE:/work" \
             archlinux \

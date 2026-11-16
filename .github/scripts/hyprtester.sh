@@ -107,6 +107,18 @@ if failures:
 EOF
 
 find "$RUNTIME" /tmp/hypr -name '*.log' -exec cp --backup=numbered {} "$LOGS/" \; 2>/dev/null || true
+
+# Hyprland's own errors explain most environment problems; show them next to the test failures.
+if [[ "$STATUS" -ne 0 ]]; then
+  echo "::group::Hyprland errors and warnings"
+  df -h /dev/shm || true
+  for log in "$LOGS"/hyprland.log*; do
+    [[ -f "$log" ]] || continue
+    echo "== $log"
+    grep -aE "ERR|CRIT|WARN|child-test|shm" "$log" | grep -av "TRACE" | tail -n 150 || true
+  done
+  echo "::endgroup::"
+fi
 chmod -R a+r "$LOGS"
 
 exit "$STATUS"

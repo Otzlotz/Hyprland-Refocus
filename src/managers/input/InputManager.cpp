@@ -275,18 +275,15 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
             m_mousePosDelta += MOUSECOORDSFLOORED.distance(m_lastCursorPosFloored);
         else
             m_mousePosDelta = 0;
-
-        m_foundSurfaceToFocus.reset();
-        m_foundLSToFocus.reset();
-        m_foundWindowToFocus.reset();
     }
-    SP<CWLSurfaceResource> foundSurface;
-    Vector2D               surfaceCoords;
-    Vector2D               surfacePos = Vector2D(-1337, -1337);
-    std::optional<CBox>    heldSurfaceBox;
-    PHLWINDOW              pFoundWindow;
-    PHLLS                  pFoundLayerSurface;
-    const auto             FOCUS_REASON = refocus ? Desktop::FOCUS_REASON_CLICK : Desktop::FOCUS_REASON_FFM;
+    SSurfacePick        pick;
+    auto&               foundSurface  = pick.surface;
+    auto&               surfaceCoords = pick.surfaceCoords;
+    auto&               surfacePos    = pick.surfacePos;
+    std::optional<CBox> heldSurfaceBox;
+    auto&               pFoundWindow       = pick.window;
+    auto&               pFoundLayerSurface = pick.layer;
+    const auto          FOCUS_REASON       = refocus ? Desktop::FOCUS_REASON_CLICK : Desktop::FOCUS_REASON_FFM;
 
     if (!pointerOnly) {
         Event::SCallbackInfo info;
@@ -361,12 +358,6 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
             foundSurface  = foundLockSurface;
         }
 
-        if (refocus) {
-            m_foundLSToFocus      = pFoundLayerSurface;
-            m_foundWindowToFocus  = pFoundWindow;
-            m_foundSurfaceToFocus = foundSurface;
-        }
-
         g_pSeatManager->setPointerFocus(foundSurface, surfaceCoords);
         if (!pointerOnly && !m_pointerConstraints.apply(time, mouseCoords))
             g_pSeatManager->sendPointerMotion(time, surfaceCoords);
@@ -434,127 +425,8 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
         return;
     }
 
-    if (!foundSurface)
-        foundSurface = Desktop::viewState()->hitTest().layerPopupSurfaceAt(mouseCoords, PMONITOR, &surfaceCoords, &pFoundLayerSurface);
-
-    // overlays are above fullscreen
-    if (!foundSurface)
-        foundSurface =
-            Desktop::viewState()->hitTest().layerSurfaceAt(mouseCoords, &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY], &surfaceCoords, &pFoundLayerSurface);
-
-    // also top layers
-    if (!foundSurface)
-        foundSurface =
-            Desktop::viewState()->hitTest().layerSurfaceAt(mouseCoords, &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP], &surfaceCoords, &pFoundLayerSurface);
-
-    // then, we check if the workspace doesn't have a fullscreen window
-    const auto PWORKSPACE = PMONITOR->m_activeSpecialWorkspace ? PMONITOR->m_activeSpecialWorkspace : PMONITOR->m_activeWorkspace;
-
-    bool       windowIdealQueried = false;
-    PHLWINDOW  pWindowIdeal;
-    const auto getWindowIdeal = [&]() -> const PHLWINDOW& {
-        if (!windowIdealQueried) {
-            pWindowIdeal = Desktop::viewState()->hitTest().windowAt(
-                mouseCoords, Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING | Desktop::View::FOLLOW_MOUSE_CHECK);
-            windowIdealQueried = true;
-        }
-
-        return pWindowIdeal;
-    };
-
-    const bool HAS_EXCLUSIVE_FULLSCREEN =
-        (Fullscreen::controller()->hasFullscreen(PWORKSPACE) && Fullscreen::controller()->getFullscreenModes(PWORKSPACE).internal == Fullscreen::FSMODE_FULLSCREEN) ||
-        (Fullscreen::controller()->hasFullscreen(PMONITOR) && Fullscreen::controller()->getFullscreenModes(PMONITOR).internal == Fullscreen::FSMODE_FULLSCREEN);
-
-    if (HAS_EXCLUSIVE_FULLSCREEN) {
-        const auto IS_LS_UNFOCUSABLE = pFoundLayerSurface &&
-            (pFoundLayerSurface->m_layer < ZWLR_LAYER_SHELL_V1_LAYER_TOP ||
-             (pFoundLayerSurface->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP && !(pFoundLayerSurface->m_flags & Desktop::View::LAYER_FLAG_ABOVE_FULLSCREEN)));
-
-        if (IS_LS_UNFOCUSABLE) {
-            foundSurface       = nullptr;
-            pFoundLayerSurface = nullptr;
-
-            pFoundWindow = Fullscreen::controller()->getFullscreenWindow(PWORKSPACE);
-
-            if (!pFoundWindow) {
-                return;
-            }
-
-            const auto& PWINDOWIDEAL = getWindowIdeal();
-            if (PWINDOWIDEAL &&
-                ((PWINDOWIDEAL->isFloating() && PWINDOWIDEAL->isAllowedOverFullscreen()) /* floating over fullscreen or pinned */
-                 || (PMONITOR->m_activeSpecialWorkspace == PWINDOWIDEAL->m_workspace) /* on an open special workspace */))
-                pFoundWindow = PWINDOWIDEAL;
-
-            if (!pFoundWindow->backend().isX11()) {
-                foundSurface = Desktop::viewState()->hitTest().windowSurfaceAt(mouseCoords, pFoundWindow, surfaceCoords);
-                surfacePos   = Vector2D(-1337, -1337);
-            } else {
-                foundSurface = pFoundWindow->wlSurface()->resource();
-                surfacePos   = pFoundWindow->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
-            }
-        }
-    }
-
-    // then windows
-    if (!foundSurface) {
-        if (Fullscreen::controller()->hasFullscreen(PWORKSPACE) && Fullscreen::controller()->getFullscreenModes(PWORKSPACE).internal == Fullscreen::FSMODE_MAXIMIZED) {
-            if (!foundSurface) {
-                if (PMONITOR->m_activeSpecialWorkspace) {
-                    const auto& PWINDOWIDEAL = getWindowIdeal();
-                    if (pFoundWindow != PWINDOWIDEAL)
-                        pFoundWindow = PWINDOWIDEAL;
-
-                    if (pFoundWindow && !pFoundWindow->onSpecialWorkspace()) {
-                        pFoundWindow = Fullscreen::controller()->getFullscreenWindow(PWORKSPACE);
-                    }
-                } else {
-                    // if we have a maximized window, allow focusing on a bar or something if in reserved area.
-                    if (State::monitorLayoutController()->isPointOnReservedArea(mouseCoords, PMONITOR)) {
-                        foundSurface = Desktop::viewState()->hitTest().layerSurfaceAt(mouseCoords, &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM],
-                                                                                      &surfaceCoords, &pFoundLayerSurface);
-                    }
-
-                    if (!foundSurface) {
-                        const auto& PWINDOWIDEAL = getWindowIdeal();
-                        if (pFoundWindow != PWINDOWIDEAL)
-                            pFoundWindow = PWINDOWIDEAL;
-
-                        if (!(pFoundWindow && (pFoundWindow->isFloating() && pFoundWindow->isAllowedOverFullscreen())))
-                            pFoundWindow = Fullscreen::controller()->getFullscreenWindow(PWORKSPACE);
-                    }
-                }
-            }
-
-        } else {
-            const auto& PWINDOWIDEAL = getWindowIdeal();
-            if (pFoundWindow != PWINDOWIDEAL)
-                pFoundWindow = PWINDOWIDEAL;
-        }
-
-        if (pFoundWindow) {
-            if (!pFoundWindow->backend().isX11()) {
-                foundSurface = Desktop::viewState()->hitTest().windowSurfaceAt(mouseCoords, pFoundWindow, surfaceCoords);
-                if (!foundSurface) {
-                    foundSurface = pFoundWindow->wlSurface()->resource();
-                    surfacePos   = pFoundWindow->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
-                }
-            } else {
-                foundSurface = pFoundWindow->wlSurface()->resource();
-                surfacePos   = pFoundWindow->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
-            }
-        }
-    }
-
-    // then surfaces below
-    if (!foundSurface)
-        foundSurface =
-            Desktop::viewState()->hitTest().layerSurfaceAt(mouseCoords, &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM], &surfaceCoords, &pFoundLayerSurface);
-
-    if (!foundSurface)
-        foundSurface =
-            Desktop::viewState()->hitTest().layerSurfaceAt(mouseCoords, &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND], &surfaceCoords, &pFoundLayerSurface);
+    if (!pickDesktopSurface(mouseCoords, PMONITOR, pick))
+        return;
 
     if (CURSOR_MONITOR && Pointer::mgr()->softwareLockedFor(CURSOR_MONITOR_REF) > 0 && !SKIP_CURSOR_FRAME_SCHEDULE)
         CURSOR_MONITOR->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_CURSOR_MOVE);
@@ -619,13 +491,6 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
 
         if (PLS && PLS->m_layerSurface->m_current.keyboardInteractivity == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
             allowKeyboardRefocus = false;
-    }
-
-    // set the values for use
-    if (refocus) {
-        m_foundLSToFocus      = pFoundLayerSurface;
-        m_foundWindowToFocus  = pFoundWindow;
-        m_foundSurfaceToFocus = foundSurface;
     }
 
     if (g_layoutManager->dragController()->target() && (!pFoundWindow || pFoundWindow->layoutTarget() != g_layoutManager->dragController()->target())) {
@@ -723,6 +588,128 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
         if (!m_pointerConstraints.apply(time, mouseCoords))
             g_pSeatManager->sendPointerMotion(time, surfaceLocal);
     }
+}
+
+bool CInputManager::pickDesktopSurface(const Vector2D& coords, PHLMONITOR monitor, SSurfacePick& pick) {
+    if (!pick.surface)
+        pick.surface = Desktop::viewState()->hitTest().layerPopupSurfaceAt(coords, monitor, &pick.surfaceCoords, &pick.layer);
+
+    // overlays are above fullscreen
+    if (!pick.surface)
+        pick.surface = Desktop::viewState()->hitTest().layerSurfaceAt(coords, &monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY], &pick.surfaceCoords, &pick.layer);
+
+    // also top layers
+    if (!pick.surface)
+        pick.surface = Desktop::viewState()->hitTest().layerSurfaceAt(coords, &monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP], &pick.surfaceCoords, &pick.layer);
+
+    // then, we check if the workspace doesn't have a fullscreen window
+    const auto PWORKSPACE = monitor->m_activeSpecialWorkspace ? monitor->m_activeSpecialWorkspace : monitor->m_activeWorkspace;
+
+    bool       windowIdealQueried = false;
+    PHLWINDOW  pWindowIdeal;
+    const auto getWindowIdeal = [&]() -> const PHLWINDOW& {
+        if (!windowIdealQueried) {
+            pWindowIdeal = Desktop::viewState()->hitTest().windowAt(
+                coords, Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING | Desktop::View::FOLLOW_MOUSE_CHECK);
+            windowIdealQueried = true;
+        }
+
+        return pWindowIdeal;
+    };
+
+    const bool HAS_EXCLUSIVE_FULLSCREEN =
+        (Fullscreen::controller()->hasFullscreen(PWORKSPACE) && Fullscreen::controller()->getFullscreenModes(PWORKSPACE).internal == Fullscreen::FSMODE_FULLSCREEN) ||
+        (Fullscreen::controller()->hasFullscreen(monitor) && Fullscreen::controller()->getFullscreenModes(monitor).internal == Fullscreen::FSMODE_FULLSCREEN);
+
+    if (HAS_EXCLUSIVE_FULLSCREEN) {
+        const auto IS_LS_UNFOCUSABLE = pick.layer &&
+            (pick.layer->m_layer < ZWLR_LAYER_SHELL_V1_LAYER_TOP ||
+             (pick.layer->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP && !(pick.layer->m_flags & Desktop::View::LAYER_FLAG_ABOVE_FULLSCREEN)));
+
+        if (IS_LS_UNFOCUSABLE) {
+            pick.surface = nullptr;
+            pick.layer   = nullptr;
+
+            pick.window = Fullscreen::controller()->getFullscreenWindow(PWORKSPACE);
+
+            if (!pick.window)
+                return false;
+
+            const auto& PWINDOWIDEAL = getWindowIdeal();
+            if (PWINDOWIDEAL &&
+                ((PWINDOWIDEAL->isFloating() && PWINDOWIDEAL->isAllowedOverFullscreen()) /* floating over fullscreen or pinned */
+                 || (monitor->m_activeSpecialWorkspace == PWINDOWIDEAL->m_workspace) /* on an open special workspace */))
+                pick.window = PWINDOWIDEAL;
+
+            if (!pick.window->backend().isX11()) {
+                pick.surface    = Desktop::viewState()->hitTest().windowSurfaceAt(coords, pick.window, pick.surfaceCoords);
+                pick.surfacePos = Vector2D(-1337, -1337);
+            } else {
+                pick.surface    = pick.window->wlSurface()->resource();
+                pick.surfacePos = pick.window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+            }
+        }
+    }
+
+    // then windows
+    if (!pick.surface) {
+        if (Fullscreen::controller()->hasFullscreen(PWORKSPACE) && Fullscreen::controller()->getFullscreenModes(PWORKSPACE).internal == Fullscreen::FSMODE_MAXIMIZED) {
+            if (!pick.surface) {
+                if (monitor->m_activeSpecialWorkspace) {
+                    const auto& PWINDOWIDEAL = getWindowIdeal();
+                    if (pick.window != PWINDOWIDEAL)
+                        pick.window = PWINDOWIDEAL;
+
+                    if (pick.window && !pick.window->onSpecialWorkspace()) {
+                        pick.window = Fullscreen::controller()->getFullscreenWindow(PWORKSPACE);
+                    }
+                } else {
+                    // if we have a maximized window, allow focusing on a bar or something if in reserved area.
+                    if (State::monitorLayoutController()->isPointOnReservedArea(coords, monitor)) {
+                        pick.surface = Desktop::viewState()->hitTest().layerSurfaceAt(coords, &monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM], &pick.surfaceCoords,
+                                                                                      &pick.layer);
+                    }
+
+                    if (!pick.surface) {
+                        const auto& PWINDOWIDEAL = getWindowIdeal();
+                        if (pick.window != PWINDOWIDEAL)
+                            pick.window = PWINDOWIDEAL;
+
+                        if (!(pick.window && (pick.window->isFloating() && pick.window->isAllowedOverFullscreen())))
+                            pick.window = Fullscreen::controller()->getFullscreenWindow(PWORKSPACE);
+                    }
+                }
+            }
+
+        } else {
+            const auto& PWINDOWIDEAL = getWindowIdeal();
+            if (pick.window != PWINDOWIDEAL)
+                pick.window = PWINDOWIDEAL;
+        }
+
+        if (pick.window) {
+            if (!pick.window->backend().isX11()) {
+                pick.surface = Desktop::viewState()->hitTest().windowSurfaceAt(coords, pick.window, pick.surfaceCoords);
+                if (!pick.surface) {
+                    pick.surface    = pick.window->wlSurface()->resource();
+                    pick.surfacePos = pick.window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+                }
+            } else {
+                pick.surface    = pick.window->wlSurface()->resource();
+                pick.surfacePos = pick.window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+            }
+        }
+    }
+
+    // then surfaces below
+    if (!pick.surface)
+        pick.surface = Desktop::viewState()->hitTest().layerSurfaceAt(coords, &monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM], &pick.surfaceCoords, &pick.layer);
+
+    if (!pick.surface)
+        pick.surface =
+            Desktop::viewState()->hitTest().layerSurfaceAt(coords, &monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND], &pick.surfaceCoords, &pick.layer);
+
+    return true;
 }
 
 void CInputManager::onMouseButton(IPointer::SButtonEvent e, SP<IPointer> mouse) {

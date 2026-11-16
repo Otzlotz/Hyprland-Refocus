@@ -49,6 +49,88 @@ Upstream already has a lot of the plumbing. These are the places to start:
   (run-or-raise).
 - Runtime-only rules that can be listed and removed again without touching the config.
 
+## Investigation: touch input vs. seat grabs
+
+**Symptom:** a grab set up via the mouse (an xdg popup/menu, or a
+`hyprland_focus_grab_v1` grab from a bar or launcher) also catches touch input.
+The first touch outside the grab is lost or delivered to the wrong app.
+
+### Trace (touch down while a seat grab is active)
+
+1. `CInputManager::onTouchDown` (`src/managers/input/Touch.cpp`) calls
+   `refocus(TOUCH_COORDS)` and then routes the touch to the surface stored in
+   `m_foundWindowToFocus` / `m_foundSurfaceToFocus` / `m_foundLSToFocus`.
+2. `refocus()` calls `mouseMoveUnified(0, refocus = true, mouse = false, TOUCH_COORDS)`
+   (`src/managers/input/InputManager.cpp`). It first **resets** the three
+   `m_found*ToFocus` members (~L279).
+3. It finds the surface under the finger. If a grab is active and does not accept that
+   surface (~L564), `refocus == true` makes it call `g_pSeatManager->setGrab(nullptr)`
+   and **return early**, before `m_found*ToFocus` is set (~L626).
+4. `CSeatManager::setGrab(nullptr)` (`src/managers/SeatManager.cpp`, ~L756) ends the
+   grab and refocuses. It knows nothing about touch:
+   - `input:follow_mouse = 1` (default): calls `g_pInputManager->refocus()` **without a
+     position**, i.e. at the **mouse cursor**. This nested call fills `m_found*ToFocus`
+     with whatever is under the cursor.
+   - `follow_mouse = 0/2/3`: focuses the popup parent or `refocusLastWindow()`. That
+     never sets `m_found*ToFocus`, so they stay empty.
+5. Back in `onTouchDown`:
+   - `follow_mouse = 1`: the touch down is sent to **the surface under the mouse
+     cursor**, possibly on another monitor. Its surface-local coordinates come from the
+     finger position, so they are wrong too. Every later motion and up event of that
+     finger follows it there.
+   - otherwise: nothing is found, and the touch is dropped (`return; // oops, nothing found.`).
+
+Touches *inside* the grab work. After the first outside touch the grab is gone, so later
+touches work again. Mouse and touch share one grab: `CSeatGrab` only has `m_keyboard` /
+`m_pointer` flags, and the only grab check sits in the pointer path (`mouseMoveUnified`),
+which touch reuses.
+
+For comparison, the mouse: a press outside the grab is sent to the grabbed client (pointer
+focus is held on the grab), and then `simulateMouseMovement()` with `m_hardInput` ends the
+grab (`processMouseDownNormal`, ~L942). The click outside is effectively **consumed**; the
+app underneath never sees it.
+
+### Decision: touch is fully separate from the pointer
+
+Touch always goes to the surface displayed under the finger. Mouse grabs (popups, focus
+grabs) stay with the mouse and are neither ended nor obeyed by touch.
+
+Implemented on `claude/hyprland-fork-setup-49phcb`:
+
+- The pure hit-test part of `mouseMoveUnified` (layer popups, overlay/top layers,
+  fullscreen handling, windows, bottom/background layers) moved unchanged into
+  `CInputManager::pickDesktopSurface()`. The mouse path calls it at the same point, so its
+  behaviour does not change.
+- `CInputManager::touchSurfaceAt()` (`Touch.cpp`) picks the touch target: IME popup →
+  focus-priority window → (session lock: above-lock layers) → `stayfocused` window →
+  `pickDesktopSurface()`. It does **not** look at seat grabs, held mouse buttons,
+  pointer constraints or an ongoing mouse window drag, and never changes pointer focus or
+  the cursor.
+- `CInputManager::focusTouchTarget()` gives keyboard focus to the touched window/layer as
+  before, **except** while a seat grab that does not include that surface is active. Then
+  the grab keeps the keyboard and the touch is only delivered as a touch.
+- `onTouchDown` no longer calls `refocus()`. The `m_found*ToFocus` members (only used by
+  touch) are gone.
+
+Side effects of the separation (all intended):
+
+- A touch outside an open popup no longer closes it.
+- Touch also works while a mouse button is held, while the pointer is locked/confined by
+  a game (pointer constraints), and during a mouse window drag. Before, it was dropped in
+  those cases.
+- Touch no longer emits the `mouse.move` event bus signal and no longer moves pointer focus.
+- Unchanged: `stayfocused` windows still take touch (config behaviour); touch
+  drag-and-drop still uses `refocus()` in `onTouchMove`; workspace swipe; session lock.
+
+Still open:
+
+- Not compiled yet (the cloud environment lacks the dependencies). Build and test locally.
+- Regression test in `hyprtester/`: needs a client with an xdg popup grab that logs
+  `wl_touch.down` per surface, and a test-plugin call that touches at an arbitrary (x, y)
+  (`hyprtester/plugin/src/WorkspaceGestures.cpp` only does x with y = 0.5).
+- `hl.dsp.kill` click mode via touch still kills the window under the **mouse cursor**
+  (`processMouseDownKill` uses `getMouseCoordsInternal()`).
+
 ## Development setup
 
 ### Branches and remotes
@@ -71,6 +153,46 @@ make debug        # or: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmak
 
 Testing a debug build in a nested session: run `./build/Hyprland` from inside a running
 Hyprland session (it opens as a window).
+
+### CI (GitHub Actions)
+
+`.github/workflows/ci.yaml` runs on every push (and on PRs from forks), in an Arch container:
+
+- **Code style:** `make format-check` with Arch's current clang-format. Fix locally with
+  `make format-fix`; an older clang-format rejects keys in `.clang-format`.
+- **Build & unit tests:** release build with `-Werror` and tests enabled, then
+  `build/hyprland_gtests`. The binaries are uploaded as a workflow artifact (kept 14 days),
+  so a change can be tried without building it locally.
+- **Integration tests (hyprtester):** all 325 tests pass (first green run: run 11).
+  Hyprland needs a DRM device for buffer allocation even in headless mode, and GitHub
+  runners have no GPU. Upstream runs these tests in a Nix VM with a virtio GPU instead.
+  The job (`.github/scripts/hyprtester.sh`):
+  - loads the `vkms` virtual display driver on the runner, then starts a privileged Arch
+    container with `/dev/dri` and 1 GB of `/dev/shm` (Docker's default is 64 MB);
+  - points aquamarine at the vkms card only (`AQ_DRM_DEVICES`). The runner also has its
+    own display adapter, and a second output shifts the monitor IDs the tests expect;
+  - installs Mesa (software GL), `seatd`, the clients the tests spawn (kitty, xeyes,
+    wl-clipboard) and a font (kitty aborts without one);
+  - builds Debug with tests and runs hyprtester as an unprivileged user (Hyprland
+    refuses to run as root);
+  - on failure, repeats each failed test's output and the relevant part of Hyprland's
+    log at the end of the job log. Full logs are uploaded as an artifact.
+
+  Fix found along the way: the `child-window` test client only flushed its Wayland
+  requests when an event arrived, so `clients:childWindow` failed at random
+  (`hyprtester/clients/child-window.cpp`). Worth reporting upstream if it bites there too.
+
+Dependency setup is shared by both jobs: `.github/scripts/setup-deps.sh`.
+
+The Hypr libraries (hyprutils, aquamarine, hyprgraphics, hyprcursor, hyprlang, hyprwire,
+hyprwayland-scanner) are built from the revisions pinned in `flake.lock`
+(`.github/actions/setup_base`). Upstream builds them from their latest `main`, which
+would drift away from this fork's 0.57.0 base. After merging upstream, update
+`flake.lock` (e.g. take upstream's) so CI follows.
+
+Not run in CI: Nix builds. Removed upstream-only workflows: issue/PR/discussion moderation, vouching,
+code owners, labeler, commit-title check, AI translation check, man-page auto-commit,
+release tarballs, Nix input updates.
 
 ### Code style
 

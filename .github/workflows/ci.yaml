@@ -1,50 +1,22 @@
-name: Build Hyprland
+name: CI
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  gcc:
+  format:
+    # PRs from branches of this repo are already covered by their push run
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
-    name: "Build Hyprland (Arch)"
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux
-    steps:
-      - name: Checkout repository actions
-        uses: actions/checkout@v6
-        with:
-          sparse-checkout: .github/actions
-
-      - name: Setup base
-        uses: ./.github/actions/setup_base
-        with:
-          INSTALL_XORG_PKGS: true
-
-      - name: Build Hyprland
-        run: |
-          CFLAGS=-Werror CXXFLAGS=-Werror make nopch
-
-      - name: Compress and package artifacts
-        run: |
-          mkdir x86_64-pc-linux-gnu
-          mkdir hyprland
-          cp ./LICENSE hyprland/
-          cp build/Hyprland hyprland/
-          cp build/hyprctl/hyprctl hyprland/
-          cp build/hyprpm/hyprpm hyprland/
-          cp -r example/ hyprland/
-          cp -r assets/ hyprland/
-          tar -cvJf Hyprland.tar.xz hyprland
-
-      - name: Release
-        uses: actions/upload-artifact@v7
-        with:
-          name: Build archive
-          path: Hyprland.tar.xz
-
-  clang-format:
-    permissions: read-all
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
-    name: "Code Style"
+    name: Code style
     runs-on: ubuntu-latest
     container:
       image: archlinux
@@ -55,24 +27,106 @@ jobs:
       - name: Install clang-format
         run: |
           pacman --noconfirm --noprogressbar -Syyu
-          pacman --noconfirm --noprogressbar -Sy clang
+          pacman --noconfirm --noprogressbar -Sy clang make findutils
 
       - name: clang-format check
-        run: .github/workflows/clang-format-check.sh "." "llvm" "^subprojects$" ""
-
-      - name: Save PR head commit SHA
-        if: failure() && github.event_name == 'pull_request'
-        shell: bash
         run: |
-          SHA="${{ github.event.pull_request.head.sha }}"
-          echo "SHA=$SHA" >> $GITHUB_ENV
-      - name: Save latest commit SHA if not PR
-        if: failure() && github.event_name != 'pull_request'
-        shell: bash
-        run: echo "SHA=${{ github.sha }}" >> $GITHUB_ENV
+          clang-format --version
+          make format-check
 
-      - name: Report failure in job summary
-        if: failure()
+  build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
+    name: Build & unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    container:
+      image: archlinux
+    steps:
+      - name: Install git
+        run: pacman --noconfirm --noprogressbar -Syyu git
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Mark directory as safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup_base
+        with:
+          INSTALL_XORG_PKGS: true
+
+      - name: Configure
+        env:
+          CFLAGS: -Werror
+          CXXFLAGS: -Werror
         run: |
-          DEEPLINK="${{ github.server_url }}/${{ github.repository }}/commit/${{ env.SHA }}"
-          echo -e "Format check failed on commit [${GITHUB_SHA:0:8}]($DEEPLINK) with files:\n$(<$GITHUB_WORKSPACE/failing-files.txt)" >> $GITHUB_STEP_SUMMARY
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+            -DBUILD_TESTING=ON \
+            -DWITH_COVERAGE=OFF
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Unit tests
+        run: |
+          export XDG_RUNTIME_DIR="$(mktemp -d)"
+          ./build/hyprland_gtests --gtest_brief=1
+
+      - name: Package binaries
+        run: |
+          mkdir hyprland
+          cp LICENSE build/Hyprland build/hyprctl/hyprctl build/hyprpm/hyprpm hyprland/
+          cp -r example/ assets/ hyprland/
+          tar -cJf Hyprland.tar.xz hyprland
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: Hyprland-${{ github.sha }}
+          path: Hyprland.tar.xz
+          retention-days: 14
+
+  hyprtester:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
+    name: Integration tests (hyprtester)
+    # Not in a job container: the vkms kernel module has to be loaded on the host first,
+    # then an Arch container is started by hand with the resulting /dev/dri.
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Load virtual display driver (vkms)
+        run: |
+          # built into the runner kernel; only older images need linux-modules-extra
+          sudo modprobe vkms || {
+            sudo apt-get update -q
+            sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+            sudo modprobe vkms
+          }
+          ls -l /dev/dri
+
+      - name: Build and run hyprtester
+        run: |
+          # Docker limits /dev/shm to 64 MB; test clients put their buffers there
+          docker run --rm --privileged --shm-size=1g \
+            -v /dev/dri:/dev/dri \
+            -v "$GITHUB_WORKSPACE:/work" \
+            archlinux \
+            /work/.github/scripts/hyprtester.sh /work/test-logs
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hyprtester-logs-${{ github.sha }}
+          path: test-logs/
+          retention-days: 14

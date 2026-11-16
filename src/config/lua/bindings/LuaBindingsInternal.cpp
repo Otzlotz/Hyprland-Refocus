@@ -539,8 +539,50 @@ std::expected<void, std::string> Internal::addWindowRuleEffectFromLua(lua_State*
     return rule->addEffect(desc.effect, val->toString());
 }
 
+// { class = "firefox", title = "..." } -> matcher-only rule, same value rules as hl.window_rule's match
+static std::expected<SP<Desktop::Rule::CWindowRule>, std::string> buildMatchRuleFromTable(lua_State* L, int idx) {
+    if (!lua_istable(L, idx))
+        return std::unexpected("match must be a table, e.g. { class = \"firefox\" }");
+
+    const int matchIdx = lua_absindex(L, idx);
+    auto      rule     = makeShared<Desktop::Rule::CWindowRule>("__exec_fallback");
+
+    lua_pushnil(L);
+    while (lua_next(L, matchIdx) != 0) {
+        if (lua_type(L, -2) != LUA_TSTRING) {
+            lua_pop(L, 2);
+            return std::unexpected("match keys must be strings");
+        }
+
+        const std::string key = lua_tostring(L, -2);
+        std::string       value;
+        if (lua_type(L, -1) == LUA_TBOOLEAN)
+            value = lua_toboolean(L, -1) ? "true" : "false";
+        else if (lua_type(L, -1) == LUA_TNUMBER)
+            value = std::to_string(lua_tointeger(L, -1));
+        else if (lua_isstring(L, -1))
+            value = lua_tostring(L, -1);
+        else {
+            lua_pop(L, 2);
+            return std::unexpected(std::format("match value for '{}' must be string, bool, or number", key));
+        }
+
+        const auto PROP = Desktop::Rule::matchPropFromString(key);
+        if (!PROP.has_value()) {
+            lua_pop(L, 2);
+            return std::unexpected(std::format("unknown match property '{}'", key));
+        }
+
+        rule->registerMatch(*PROP, value);
+        lua_pop(L, 1);
+    }
+
+    return rule;
+}
+
 std::expected<SP<Desktop::Rule::CWindowRule>, int> Internal::buildRuleFromTable(lua_State* L, int idx) {
     SP<Desktop::Rule::CWindowRule> rule;
+    SP<Desktop::Rule::CWindowRule> fallback;
 
     if (!lua_isnoneornil(L, idx)) {
         if (!lua_istable(L, idx))
@@ -559,6 +601,16 @@ std::expected<SP<Desktop::Rule::CWindowRule>, int> Internal::buildRuleFromTable(
             }
 
             std::string key = lua_tostring(L, -2);
+
+            if (key == "match") {
+                auto res = buildMatchRuleFromTable(L, -1);
+                lua_pop(L, 1);
+                if (!res)
+                    return std::unexpected(Internal::configError(L, "buildRuleFromTable: {}", res.error()));
+
+                fallback = std::move(*res);
+                continue;
+            }
 
             if (key == "floating")
                 key = "float";
@@ -600,6 +652,9 @@ std::expected<SP<Desktop::Rule::CWindowRule>, int> Internal::buildRuleFromTable(
 
         if (!hasRuleEffects)
             return nullptr;
+
+        if (fallback)
+            rule->setExecFallback(std::move(fallback));
     }
 
     return rule;

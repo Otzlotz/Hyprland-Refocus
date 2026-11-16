@@ -122,12 +122,14 @@ Side effects of the separation (all intended):
 - Unchanged: `stayfocused` windows still take touch (config behaviour); touch
   drag-and-drop still uses `refocus()` in `onTouchMove`; workspace swipe; session lock.
 
-Still open:
+Status and open items:
 
-- Not compiled yet (the cloud environment lacks the dependencies). Build and test locally.
-- Regression test in `hyprtester/`: needs a client with an xdg popup grab that logs
-  `wl_touch.down` per surface, and a test-plugin call that touches at an arbitrary (x, y)
-  (`hyprtester/plugin/src/WorkspaceGestures.cpp` only does x with y = 0.5).
+- Compiles and passes CI (build with `-Werror`, unit tests, hyprtester). Not yet tried on
+  real touch hardware.
+- Regression test: `main:touchIgnoresMouseGrab` (`hyprtester/src/tests/main/touch_grab.cpp`).
+  It puts a pointer + keyboard seat grab on one window via the test plugin
+  (`hyprtester/plugin/src/TouchGrab.cpp`) and checks that a touch on another window goes
+  there, keeps the grab and leaves pointer/keyboard focus alone.
 - `hl.dsp.kill` click mode via touch still kills the window under the **mouse cursor**
   (`processMouseDownKill` uses `getMouseCoordsInternal()`).
 

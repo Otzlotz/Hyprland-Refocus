@@ -384,6 +384,18 @@ bool CWindowRule::matches(PHLWINDOW w, bool allowEnvLookup) {
     if (!canMatch())
         return false;
 
+    if (matchesProps(w, allowEnvLookup))
+        return true;
+
+    // only for the new-window check: without env lookup, exec props are skipped and everything would match
+    return allowEnvLookup && m_execFallback && m_execFallback->matches(w);
+}
+
+void CWindowRule::setExecFallback(SP<CWindowRule> fallback) {
+    m_execFallback = std::move(fallback);
+}
+
+bool CWindowRule::matchesProps(PHLWINDOW w, bool allowEnvLookup) {
     for (const auto& [prop, engine] : m_matchEngines) {
         switch (prop) {
             default: {

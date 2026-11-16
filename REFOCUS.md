@@ -35,19 +35,49 @@ Upstream already has a lot of the plumbing. These are the places to start:
 
 ## Open questions / ideas to evaluate
 
-- How far does upstream already get us? E.g. can
-  `hyprctl dispatch 'hl.dsp.exec_cmd("kitty", { workspace = "3 silent" })'` or a monitor
-  rule already cover goal 3? Document gaps before writing code.
+- ~~How far does upstream already get us?~~ Answered, see "Feature: open an app on a
+  monitor/workspace" below.
 - Persistent exec rules: the `persistent` flag in `markAsExecRule` is unused
   (`Executor.cpp:67` TODO). Needed if an app should keep landing on the chosen
   workspace/monitor when it spawns further windows.
-- Matching by app class instead of PID, for apps that are launched via a launcher/daemon
-  (PID of the spawned process ≠ PID of the window).
+- ~~Matching by app class instead of PID~~ Done: `match` option of `exec_cmd`, see below.
 - A simpler user-facing interface: a small CLI (`hyprctl` subcommand or separate tool) or
   a picker UI, e.g. `refocus open firefox --monitor DP-1 --workspace 4`.
 - "Focus app" by class/title with fallback to launching it if not running
   (run-or-raise).
 - Runtime-only rules that can be listed and removed again without touching the config.
+
+## Feature: open an app on a monitor/workspace
+
+Upstream already covers the basic case without touching the config:
+
+```sh
+hyprctl dispatch 'hl.dsp.exec_cmd("kitty", { workspace = "3 silent" })'
+hyprctl dispatch 'hl.dsp.exec_cmd("kitty", { monitor = "DP-1" })'
+```
+
+The rule table takes window-rule effects and applies them once, to the first window of the
+started process. Hyprland gives the process a token in its environment
+(`HL_EXEC_RULE_TOKEN`, inherited by children) and falls back to its pid; the rule expires
+after one minute (`src/config/supplementary/executor/Executor.cpp`,
+`src/desktop/rule/windowRule/WindowRule.cpp`).
+
+Gap: apps that hand a new window to an instance that is already running (browsers, Electron
+apps, anything started through D-Bus) open it from the old process, which has neither the
+token nor the pid. The rule never applies.
+
+Fork addition: an optional `match` table, with the same keys as `hl.window_rule`'s `match`.
+The one-off rule then also takes the first new window that matches it:
+
+```sh
+hyprctl dispatch 'hl.dsp.exec_cmd("firefox", { workspace = "3", match = { class = "firefox" } })'
+```
+
+- Still one-shot and still expires after one minute.
+- Without `match`, nothing changes (existing configs are unaffected).
+- Trade-off: a matching window you open yourself within that minute is taken instead.
+- Unknown match keys or wrong value types are reported as errors.
+- Test: `main:execRulesMatchFallback` (`hyprtester/src/tests/main/window.cpp`).
 
 ## Investigation: touch input vs. seat grabs
 

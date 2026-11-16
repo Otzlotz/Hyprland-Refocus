@@ -66,7 +66,14 @@ namespace Desktop::Rule {
         bool                                               matches(Desktop::Rule::eRuleProperty p, const std::string& s);
         bool                                               matches(Desktop::Rule::eRuleProperty p, bool b);
 
+        // exec rules: also take the first new window this matcher-only rule matches. For apps that
+        // hand a new window to an already running instance, which has neither the exec token nor pid.
+        void setExecFallback(SP<CWindowRule> fallback);
+
       private:
         std::expected<WindowRuleEffectValue, std::string> parseEffect(storageType e, const std::string& result) override;
+        bool                                              matchesProps(PHLWINDOW w, bool allowEnvLookup);
+
+        SP<CWindowRule>                                   m_execFallback;
     };
 };

@@ -1587,6 +1587,30 @@ TEST_CASE(execRulesPendingIsolation) {
     Tests::killAllWindows();
 }
 
+// The exec'd command opens no window itself. The window comes from a process Hyprland didn't
+// spawn (no exec token, other pid), like an app handing off to an already running instance.
+TEST_CASE(execRulesMatchFallback) {
+    Hyprutils::Utils::CScopeGuard cleanup([] { Tests::killAllWindows(); });
+
+    OK(getFromSocket("/dispatch hl.dsp.exec_cmd('true', { workspace = '3 silent', match = { class = 'kitty_exec_handoff' } })"));
+    OK(getFromSocket("/dispatch hl.dsp.exec_cmd('true', { workspace = '4 silent' })"));
+
+    SPAWN_KITTY("kitty_exec_unrelated");
+    SPAWN_KITTY("kitty_exec_handoff");
+    SPAWN_KITTY("kitty_exec_handoff");
+
+    const auto clients = getFromSocket("/clients");
+    // exactly the first handoff window was moved: the rule is one-shot and only takes matching windows
+    EXPECT(Tests::countOccurrences(clients, "workspace: 3 (3)"), 1);
+    // without match, the rule still only applies to its own process
+    EXPECT(Tests::countOccurrences(clients, "workspace: 4 (4)"), 0);
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:kitty_exec_unrelated' })"));
+    EXPECT_NOT_CONTAINS(getFromSocket("/activewindow"), "workspace: 3 (3)");
+
+    EXPECT_CONTAINS(getFromSocket("/dispatch hl.dsp.exec_cmd('true', { workspace = '3', match = { not_a_property = 'x' } })"), "unknown match property");
+}
+
 TEST_CASE(pinnedRetainsPositionOnWorkspaceChange) {
     SPAWN_KITTY("a");
 

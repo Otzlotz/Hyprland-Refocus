@@ -13,8 +13,9 @@ TESTER=hyprtester
 echo "::group::dependencies"
 "$REPO/.github/scripts/setup-deps.sh" --xorg
 git config --global --add safe.directory '*'
-# runtime needs of the tests: software GL, a seat, and the clients the tests spawn
-pacman --noconfirm --noprogressbar -S --needed mesa seatd kitty xorg-xeyes wl-clipboard
+# runtime needs of the tests: software GL, a seat, the clients the tests spawn, and a
+# font (kitty aborts without one)
+pacman --noconfirm --noprogressbar -S --needed mesa seatd kitty xorg-xeyes wl-clipboard fontconfig ttf-dejavu
 echo "::endgroup::"
 
 echo "::group::build"

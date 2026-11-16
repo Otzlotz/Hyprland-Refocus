@@ -115,8 +115,19 @@ if [[ "$STATUS" -ne 0 ]]; then
   df -h /dev/shm || true
   for log in "$LOGS"/*.log*; do
     [[ -f "$log" && "$(basename "$log")" != hyprtester.log* ]] || continue
-    echo "== $log"
-    grep -aE "ERR|CRIT|WARN|child-test|shm" "$log" | grep -av "TRACE" | tail -n 150 || true
+    echo "== $log (errors and warnings, last 60)"
+    grep -aE "ERR|CRIT" "$log" | grep -av "TRACE" | tail -n 60 || true
+    # childWindow is flaky here: show what Hyprland did around its windows
+    echo "== $log (around child-test windows)"
+    python3 - "$log" <<'EOF' || true
+import sys
+
+lines = [l.rstrip("\n") for l in open(sys.argv[1], errors="replace") if "TRACE" not in l]
+hits = [i for i, l in enumerate(lines) if "child-test" in l]
+if hits:
+    for l in lines[max(0, hits[0] - 5) : hits[-1] + 40][:400]:
+        print(l[:300])
+EOF
   done
   echo "::endgroup::"
 fi

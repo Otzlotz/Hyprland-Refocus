@@ -3,6 +3,8 @@
 Fork of [hyprwm/Hyprland](https://github.com/hyprwm/Hyprland), based on upstream `0.57.0`
 (commit `84b5122`).
 
+Full list of changes against upstream: [`CHANGES.md`](CHANGES.md).
+
 ## Project goals
 
 1. **Change app focus dynamically.** Move focus between running applications on the fly,

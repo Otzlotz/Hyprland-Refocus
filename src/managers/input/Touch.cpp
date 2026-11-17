@@ -226,6 +226,11 @@ void CInputManager::focusTouchTarget(const SSurfacePick& pick, PHLMONITOR monito
     if (g_pSeatManager->m_seatGrab && !g_pSeatManager->m_seatGrab->accepts(pick.surface))
         return;
 
+    // the tap took keyboard focus away from the window under the cursor: the next mouse motion
+    // has to count as entering that window again, otherwise follow_mouse can't hand focus back
+    // (with mouse_refocus = false not even while the cursor moves around inside it)
+    m_lastMouseFocus.reset();
+
     if (pick.window) {
         if (Desktop::focusState()->window() != pick.window)
             Desktop::focusState()->rawWindowFocus(pick.window, Desktop::FOCUS_REASON_CLICK, pick.surface);

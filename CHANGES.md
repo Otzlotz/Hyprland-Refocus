@@ -18,7 +18,9 @@ upstream differences to a release (e.g. 0.57.2) are not listed here; see them wi
   popups, focus grabs from bars and launchers) neither block touches nor get ended by them.
 - A touch never moves pointer focus or changes the cursor.
 - Keyboard focus follows the tap, except while a grab that doesn't include the tapped surface is
-  active.
+  active. The next mouse movement hands keyboard focus back to the window under the cursor
+  (`follow_mouse = 1`, also with `mouse_refocus = false`), as it did when touch moved the
+  pointer.
 - Fixed: a touch outside an open popup was delivered to the surface under the mouse cursor
   (`follow_mouse = 1`) or silently dropped (other `follow_mouse` modes).
 - Behaviour changes:
@@ -67,6 +69,8 @@ hl.dsp.exec_cmd("firefox", { workspace = "3", monitor = "DP-1", match = { class 
 - New:
   - `main:touchIgnoresMouseGrab` (touch with and without a mouse grab; plugin fixture
     `hyprtester/plugin/src/TouchGrab.cpp`);
+  - `main:touchThenMouseRefocus` (mouse movement after a tap refocuses the window under the
+    cursor);
   - `main:execRulesMatchFallback`, `main:execRulesMatchFallbackMonitor`;
   - `main:refocusMarker`.
 - Fixed upstream flakiness:

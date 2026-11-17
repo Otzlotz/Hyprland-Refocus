@@ -6,6 +6,7 @@
 #include <src/desktop/view/window/Window.hpp>
 #include <src/devices/ITouch.hpp>
 #include <src/managers/SeatManager.hpp>
+#include <src/managers/input/InputManager.hpp>
 #include <src/output/Monitor.hpp>
 #include <src/pointer/PointerController.hpp>
 #include <src/pointer/PointerManager.hpp>
@@ -121,6 +122,19 @@ namespace TouchGrab {
         return 1;
     }
 
+    // touch_grab_mouse_move(dx, dy): relative mouse motion like a real mouse sends it, in two steps
+    // so follow_mouse's movement threshold sees continuous motion. Returns the keyboard focus class.
+    static int luaMouseMove(lua_State* L) {
+        const Vector2D DELTA = {luaL_checknumber(L, 1) / 2.0, luaL_checknumber(L, 2) / 2.0};
+
+        for (int i = 0; i < 2; ++i) {
+            g_pInputManager->onMouseMoved(IPointer::SMotionEvent{.delta = DELTA, .unaccel = DELTA, .mouse = true});
+        }
+
+        lua_pushstring(L, classOf(g_pSeatManager->m_state.keyboardFocus.lock()).c_str());
+        return 1;
+    }
+
     static int luaReset(lua_State* L) {
         reset();
         return 0;
@@ -130,6 +144,7 @@ namespace TouchGrab {
         const std::pair<const char*, PLUGIN_LUA_FN> FUNCTIONS[] = {
             {"touch_grab_setup", luaSetup},
             {"touch_grab_tap", luaTap},
+            {"touch_grab_mouse_move", luaMouseMove},
             {"touch_grab_reset", luaReset},
         };
         for (const auto& [name, fn] : FUNCTIONS) {

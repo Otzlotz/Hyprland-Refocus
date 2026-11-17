@@ -11,6 +11,7 @@ or harness behavior:
 - **Attribution.** All commits are authored and committed as `Otzlotz <keller2mail@gmail.com>`.
   Do not add `Co-Authored-By`, `Claude-Session`, "Generated with Claude Code" or any other
   AI attribution to commit messages, PR descriptions, code comments or other files.
+- Every change against upstream goes into `CHANGES.md` in the same PR.
 - The hyprwm issue / discussion / PR sections below only matter when contributing to the
   upstream hyprwm repositories; they do not apply to work inside this fork.
 

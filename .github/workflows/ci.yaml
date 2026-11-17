@@ -68,10 +68,18 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
             -DBUILD_TESTING=ON \
-            -DWITH_COVERAGE=OFF
+            -DWITH_COVERAGE=OFF \
+            -DREFOCUS_SESSION=ON
 
       - name: Build
         run: cmake --build build -j"$(nproc)"
+
+      - name: Check the Hyprland Refocus session entry
+        # shells and portals rely on DesktopNames=Hyprland; the entry must start this build's binary
+        run: |
+          cat build/hyprland-refocus.desktop
+          grep -qx 'DesktopNames=Hyprland' build/hyprland-refocus.desktop
+          grep -qx 'Exec=/usr/local/bin/start-hyprland --path /usr/local/bin/Hyprland' build/hyprland-refocus.desktop
 
       - name: Unit tests
         run: |

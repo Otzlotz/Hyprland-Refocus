@@ -667,6 +667,20 @@ configure_file(
 install(FILES ${CMAKE_SOURCE_DIR}/example/hyprland.desktop
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/wayland-sessions)
 
+# Hyprland-Refocus: a separate login entry, so the fork can be installed next to the distro's
+# Hyprland (e.g. -DCMAKE_INSTALL_PREFIX=/opt/hyprland-refocus) and picked in the display manager.
+# It keeps DesktopNames=Hyprland, so portals and shells see a normal Hyprland session.
+option(REFOCUS_SESSION "Install a 'Hyprland Refocus' session entry for display managers" OFF)
+set(REFOCUS_SESSION_DIR
+    "/usr/share/wayland-sessions"
+    CACHE PATH "Where display managers look for Wayland session entries")
+if(REFOCUS_SESSION)
+  configure_file(${CMAKE_SOURCE_DIR}/example/hyprland-refocus.desktop.in
+                 ${CMAKE_BINARY_DIR}/hyprland-refocus.desktop @ONLY)
+  install(FILES ${CMAKE_BINARY_DIR}/hyprland-refocus.desktop
+          DESTINATION ${REFOCUS_SESSION_DIR})
+endif()
+
 # allow Hyprland to find assets
 add_compile_definitions(DATAROOTDIR="${CMAKE_INSTALL_FULL_DATAROOTDIR}")
 

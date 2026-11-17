@@ -485,4 +485,11 @@ void Internal::registerToplevelBindings(lua_State* L, CConfigManager* mgr) {
     Internal::setFn(L, "unbind", hlUnbind);
 
     Internal::setFn(L, "is_key_down", hlIsKeyDown);
+
+    // Hyprland-Refocus marker. A config shared with upstream Hyprland can test `if hl.refocus then`
+    // before using fork-only features; upstream has no such field. Bump api when they change.
+    lua_createtable(L, 0, 1);
+    lua_pushinteger(L, 1);
+    lua_setfield(L, -2, "api");
+    lua_setfield(L, -2, "refocus");
 }

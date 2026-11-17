@@ -4,6 +4,7 @@
 #include "../shared.hpp"
 
 #include <hyprutils/utils/ScopeGuard.hpp>
+#include <format>
 #include <string>
 
 // Touch is routed on its own: a seat grab made with the mouse (an xdg popup, a focus grab)
@@ -55,4 +56,41 @@ TEST_CASE(touchIgnoresMouseGrab) {
         assert(s.touch_focus == 'touch_grab_a', 'touch went to "' .. s.touch_focus .. '"')
         assert(s.grab_active, 'the touch ended the mouse grab')
     )"));
+}
+
+// A tap moves keyboard focus but leaves the cursor where it is. Moving the mouse afterwards has
+// to give focus back to the window under the cursor (follow_mouse = 1), also with
+// mouse_refocus = false, where only entering a window refocuses.
+TEST_CASE(touchThenMouseRefocus) {
+    Hyprutils::Utils::CScopeGuard cleanup([] {
+        getFromSocket("/eval hl.plugin.test.touch_grab_reset()");
+        getFromSocket("/reload");
+        Tests::killAllWindows();
+    });
+
+    SPAWN_KITTY("touch_refocus_a");
+    SPAWN_KITTY("touch_refocus_b");
+    EXPECT(Tests::windowCount(), 2);
+
+    for (const auto& MOUSEREFOCUS : {"false", "true"}) {
+        OK(getFromSocket(std::format("/eval hl.config({{ input = {{ follow_mouse = 1, mouse_refocus = {} }} }})", MOUSEREFOCUS)));
+        OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:touch_refocus_a' })"));
+
+        OK(getFromSocket(R"(/eval
+            local p = hl.plugin.test
+            p.touch_grab_setup('touch_refocus_a', false)
+            local ok, err = pcall(function()
+                local kb = p.touch_grab_mouse_move(4, 0)
+                assert(kb == 'touch_refocus_a', 'mouse over a did not focus it, focus is on "' .. kb .. '"')
+
+                local s = p.touch_grab_tap('touch_refocus_b')
+                assert(s.keyboard_focus == 'touch_refocus_b', 'the tap did not focus b, focus is on "' .. s.keyboard_focus .. '"')
+
+                kb = p.touch_grab_mouse_move(4, 0)
+                assert(kb == 'touch_refocus_a', 'moving the mouse after the tap left focus on "' .. kb .. '"')
+            end)
+            p.touch_grab_reset()
+            assert(ok, err)
+        )"));
+    }
 }

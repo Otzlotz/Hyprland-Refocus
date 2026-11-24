@@ -1,7 +1,7 @@
 # Hyprland-Refocus
 
-Fork of [hyprwm/Hyprland](https://github.com/hyprwm/Hyprland), based on upstream `0.57.0`
-(commit `84b5122`).
+Fork of [hyprwm/Hyprland](https://github.com/hyprwm/Hyprland), based on upstream `main`
+(commit `60a66a1`, 24 Nov 2026, version `0.57.0` plus all 0.57.1/0.57.2 fixes).
 
 Full list of changes against upstream: [`CHANGES.md`](CHANGES.md).
 
@@ -272,7 +272,7 @@ Dependency setup is shared by both jobs: `.github/scripts/setup-deps.sh`.
 The Hypr libraries (hyprutils, aquamarine, hyprgraphics, hyprcursor, hyprlang, hyprwire,
 hyprwayland-scanner) are built from the revisions pinned in `flake.lock`
 (`.github/actions/setup_base`). Upstream builds them from their latest `main`, which
-would drift away from this fork's 0.57.0 base. After merging upstream, update
+would drift away from this fork's base. After merging upstream, update
 `flake.lock` (e.g. take upstream's) so CI follows.
 
 Not run in CI: Nix builds. Removed upstream-only workflows: issue/PR/discussion moderation, vouching,

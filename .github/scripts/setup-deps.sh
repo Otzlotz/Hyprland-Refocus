@@ -18,7 +18,6 @@ pacman --noconfirm --noprogressbar -S --needed \
   git \
   glaze \
   glm \
-  glslang \
   gtest \
   hyprland-protocols \
   jq \

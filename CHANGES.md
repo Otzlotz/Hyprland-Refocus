@@ -3,10 +3,17 @@
 Everything Hyprland-Refocus changes on top of upstream Hyprland. Keep this list up to date with
 every change that lands on `main`.
 
-Base: upstream `main` at `84b5122` (15 Nov 2026, reports version `0.57.0`). That is newer than the
-0.57.0 release and likely contains the 0.57.1/0.57.2 fixes plus unreleased upstream work. The
-upstream differences to a release (e.g. 0.57.2) are not listed here; see them with
-`git log --oneline v0.57.2..84b5122` in a clone that has upstream's tags.
+Base: upstream `main` at `60a66a1` (24 Nov 2026, reports version `0.57.0`), merged on top of the
+original base `84b5122` (15 Nov 2026). Upstream `main` is ahead of the 0.57.x releases: all fixes of
+0.57.1 and 0.57.2 were already in `84b5122` (checked, e.g. `seat: fix grab check (#16900)`). The
+upstream differences to a release are not listed here; see them with
+`git log --oneline v0.57.2..60a66a1` in a clone that has upstream's tags.
+
+Merging upstream: `git fetch upstream && git merge upstream/main`. Usual conflicts are in files the
+fork replaced or removed (`.github/actions/setup_base/action.yml`: keep the fork's version and apply
+upstream's package changes to `.github/scripts/setup-deps.sh`; removed workflows stay removed) and in
+the hyprtester plugin's source list (`hyprtester/plugin/Makefile`, `src/main.cpp`: keep both).
+Take upstream's `flake.lock` so CI builds the matching Hypr libraries.
 
 ## Compositor behaviour
 

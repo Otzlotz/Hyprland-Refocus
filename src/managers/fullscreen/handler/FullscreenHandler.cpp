@@ -253,9 +253,9 @@ void IFullscreenHandler::syncTargetSizeAndPosition() {
         }
     } else if (TARGET_INTERNAL_MODE == FSMODE_MAXIMIZED) {
 
-        const auto WORK_AREA       = WORKSPACE->space()->workArea(FS_TARGET->floating());
-        auto       roundedWorkArea = WORK_AREA;
-        roundedWorkArea.round();
+        auto workArea = WORKSPACE->space()->workArea(FS_TARGET->floating());
+        if (FS_TARGET->floating())
+            workArea.round();
 
         // Reserved area must be updated before this is called
         const auto RESERVED = WINDOW->getFullWindowReservedArea();
@@ -263,9 +263,7 @@ void IFullscreenHandler::syncTargetSizeAndPosition() {
         const auto CURRENT_REAL_POS_GOAL  = WINDOW.get()->position(Desktop::View::IGeometric::GEOMETRIC_GOAL);
         const auto CURRENT_REAL_SIZE_GOAL = WINDOW.get()->size(Desktop::View::IGeometric::GEOMETRIC_GOAL);
 
-        auto       expectedBox = CBox{roundedWorkArea.pos() + RESERVED.topLeft, roundedWorkArea.size() - RESERVED.topLeft - RESERVED.bottomRight};
-        if (std::floor(MONITOR->m_scale) != MONITOR->m_scale && WINDOW->presentation().borderExtent() > 0)
-            expectedBox = Layout::windowContentBox(roundedWorkArea, RESERVED, MONITOR->m_position, MONITOR->m_scale);
+        const auto expectedBox = Layout::windowContentBox(workArea, RESERVED, MONITOR->m_position, MONITOR->m_scale);
 
         if (CURRENT_REAL_POS_GOAL != expectedBox.pos() || CURRENT_REAL_SIZE_GOAL != expectedBox.size()) {
             controller()->m_windowPosSettingQueued = true;
@@ -308,7 +306,7 @@ void IFullscreenHandler::syncFullscreenTargets() {
 
     const auto removeFsTargetAndreturnNextIter = [&](auto& it, const auto& TARGET) {
         const auto NEXT = std::next(it);
-        removeFsTarget(TARGET, true);
+        removeFsTarget(TARGET);
         return NEXT;
     };
 
@@ -358,7 +356,7 @@ void IFullscreenHandler::syncFullscreenTargets() {
     }
 }
 
-void IFullscreenHandler::removeFsTarget(SP<Layout::ITarget> target, const bool recursionGuard) {
+void IFullscreenHandler::removeFsTarget(SP<Layout::ITarget> target) {
 
     // This should not be done because if there are 2 expired elements in the list, this will remove one of them with little guarantee as to which and the caller is preumsably looking forward and getting the next
     // iterator in the list; which would corrupt the map if that next iter is also nullptr. We let this go through on the offchance that there is Ǝ! expired entries or the erase hits the right expired target but it is
@@ -369,9 +367,6 @@ void IFullscreenHandler::removeFsTarget(SP<Layout::ITarget> target, const bool r
             "IFullscreenHandler::removeFsTarget() called with target = nullptr. This is possibly non-deterministic and should NOT happen. This is a bug and should be reported!");
 
     m_fsTargets.erase(target);
-
-    if (!recursionGuard)
-        syncFullscreenTargets();
 }
 
 eFullscreenHandler IFullscreenHandler::getFullscreenHandlerName() const {

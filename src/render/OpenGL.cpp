@@ -76,6 +76,13 @@ CBox Render::GL::resolveBlurUV(const CBox& destinationBox, const Vector2D& textu
     return {destinationBox.x / textureSize.x, destinationBox.y / textureSize.y, destinationBox.w / textureSize.x, destinationBox.h / textureSize.y};
 }
 
+CBox Render::GL::resolveBorderGradientUV(const CBox& borderBox, const Vector2D& monitorSize, bool wholeMonitor, const Vector2D& monitorOffset) {
+    if (!wholeMonitor || monitorSize.x <= 0.0 || monitorSize.y <= 0.0)
+        return {0, 0, 1, 1};
+
+    return {(borderBox.x + monitorOffset.x) / monitorSize.x, (borderBox.y + monitorOffset.y) / monitorSize.y, borderBox.w / monitorSize.x, borderBox.h / monitorSize.y};
+}
+
 static inline void loadGLProc(void* pProc, const char* name) {
     void* proc = rc<void*>(eglGetProcAddress(name));
     if (proc == nullptr) {
@@ -327,7 +334,7 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
         loadGLProc(&m_proc.eglQueryDisplayAttribEXT, "eglQueryDisplayAttribEXT");
     }
 
-    static const auto GLDEBUG = CConfigValue<Config::INTEGER>("debug:gl_debugging");
+    static const auto GLDEBUG = CConfigValue<Config::BOOL>("debug:gl_debugging");
     if (EGLEXTENSIONS.contains("EGL_KHR_debug") && *GLDEBUG) {
         loadGLProc(&m_proc.eglDebugMessageControlKHR, "eglDebugMessageControlKHR");
         static const EGLAttrib debugAttrs[] = {
@@ -377,8 +384,9 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     LOG(Log::DEBUG, "Renderer: {}", rc<const char*>(glGetString(GL_RENDERER)));
     LOG(Log::DEBUG, "Supported extensions: ({}) {}", std::ranges::count(m_extensions, ' '), m_extensions);
 
-    m_exts.EXT_read_format_bgra        = m_extensions.contains("GL_EXT_read_format_bgra");
-    m_exts.EXT_color_buffer_half_float = m_extensions.contains("GL_EXT_color_buffer_half_float") || m_extensions.contains("GL_EXT_color_buffer_float");
+    m_exts.EXT_read_format_bgra         = m_extensions.contains("GL_EXT_read_format_bgra");
+    m_exts.EXT_color_buffer_half_float  = m_extensions.contains("GL_EXT_color_buffer_half_float") || m_extensions.contains("GL_EXT_color_buffer_float");
+    m_exts.OES_EGL_image_external_essl3 = m_extensions.contains("GL_OES_EGL_image_external_essl3");
 
     RASSERT(m_extensions.contains("GL_EXT_texture_format_BGRA8888"), "GL_EXT_texture_format_BGRA8888 support by the GPU driver is required");
 
@@ -456,9 +464,22 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     });
 
     m_finalScreenShader = makeShared<CShader>();
+
+    m_shaderCompilerReleaseTimer = makeShared<CEventLoopTimer>(
+        std::nullopt,
+        [this](SP<CEventLoopTimer> self, void* data) {
+            // lets the driver free its compiler state (e.g. mesa's GLSL builtins), it's rebuilt on the next compile
+            makeEGLCurrent();
+            glReleaseShaderCompiler();
+        },
+        nullptr);
+    g_pEventLoopManager->addTimer(m_shaderCompilerReleaseTimer);
 }
 
 CHyprOpenGLImpl::~CHyprOpenGLImpl() {
+    if (m_shaderCompilerReleaseTimer && g_pEventLoopManager)
+        g_pEventLoopManager->removeTimer(m_shaderCompilerReleaseTimer);
+
     m_monitorBGFBs.clear();
 
     if (m_eglDisplay && m_eglContext != EGL_NO_CONTEXT)
@@ -504,9 +525,12 @@ std::optional<std::vector<uint64_t>> CHyprOpenGLImpl::getModsForFormat(EGLint fo
     // reserve number of elements to avoid reallocations
     result.reserve(mods.size());
 
-    bool linearIsExternal = false;
+    // yuv is always sampled externally, so external-only modifiers are fine for it
+    const bool ALLOW_EXTERNAL = NFormatUtils::isFormatYUV(format);
+
+    bool       linearIsExternal = false;
     for (size_t i = 0; i < std::min(mods.size(), external.size()); ++i) {
-        if (external[i]) {
+        if (external[i] && !ALLOW_EXTERNAL) {
             if (mods[i] == DRM_FORMAT_MOD_LINEAR)
                 linearIsExternal = true;
             continue;
@@ -565,8 +589,8 @@ void CHyprOpenGLImpl::initDRMFormats() {
     dmaFormats.reserve(formats.size());
 
     for (auto const& fmt : formats) {
-        // Do not advertise YUV until the renderer supports it.
-        if (NFormatUtils::isFormatYUV(fmt))
+        // YUV can only be sampled externally
+        if (NFormatUtils::isFormatYUV(fmt) && !m_exts.OES_EGL_image_external_essl3)
             continue;
 
         std::vector<uint64_t> mods;
@@ -631,8 +655,38 @@ void CHyprOpenGLImpl::initDRMFormats() {
         LOG(Log::WARN, "Your GPU does not support rendering to FP16 buffers, some effects and CM settings might be unavailable.");
 }
 
-EGLImageKHR CHyprOpenGLImpl::createEGLImage(const Aquamarine::SDMABUFAttrs& attrs) {
-    std::array<EGLint, 50> attribs;
+static std::vector<std::pair<EGLint, EGLint>> yuvHints(const SColorRepresentation& representation) {
+    std::vector<std::pair<EGLint, EGLint>> hints;
+
+    switch (representation.coefficients) {
+        case CM_YCBCR_COEFFICIENTS_BT601: hints.emplace_back(EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC601_EXT); break;
+        case CM_YCBCR_COEFFICIENTS_BT709: hints.emplace_back(EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC709_EXT); break;
+        case CM_YCBCR_COEFFICIENTS_BT2020: hints.emplace_back(EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC2020_EXT); break;
+        case CM_YCBCR_COEFFICIENTS_UNSET: break;
+    }
+
+    switch (representation.range) {
+        case CM_YCBCR_RANGE_FULL: hints.emplace_back(EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_FULL_RANGE_EXT); break;
+        case CM_YCBCR_RANGE_LIMITED: hints.emplace_back(EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_NARROW_RANGE_EXT); break;
+        case CM_YCBCR_RANGE_UNSET: break;
+    }
+
+    if (representation.chromaLocation == CM_CHROMA_LOCATION_UNSET)
+        return hints;
+
+    // horizontally, types 0, 2 and 4 are cosited, 1, 3 and 5 are at the midpoint.
+    // vertically, types 0 and 1 are at the midpoint, 2 and 3 are cosited, 4 and 5 sit at 1.0, which EGL can't express.
+    const int TYPE = representation.chromaLocation - CM_CHROMA_LOCATION_TYPE_0;
+    hints.emplace_back(EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT, TYPE % 2 == 0 ? EGL_YUV_CHROMA_SITING_0_EXT : EGL_YUV_CHROMA_SITING_0_5_EXT);
+
+    if (TYPE < 4)
+        hints.emplace_back(EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, TYPE < 2 ? EGL_YUV_CHROMA_SITING_0_5_EXT : EGL_YUV_CHROMA_SITING_0_EXT);
+
+    return hints;
+}
+
+EGLImageKHR CHyprOpenGLImpl::createEGLImage(const Aquamarine::SDMABUFAttrs& attrs, const SColorRepresentation& representation) {
+    std::array<EGLint, 64> attribs;
     size_t                 idx = 0;
 
     attribs[idx++] = EGL_WIDTH;
@@ -667,6 +721,13 @@ EGLImageKHR CHyprOpenGLImpl::createEGLImage(const Aquamarine::SDMABUFAttrs& attr
             attribs[idx++] = sc<uint32_t>(attrs.modifier & 0xFFFFFFFF);
             attribs[idx++] = attrNames[i].modhi;
             attribs[idx++] = sc<uint32_t>(attrs.modifier >> 32);
+        }
+    }
+
+    if (NFormatUtils::isFormatYUV(attrs.format)) {
+        for (const auto& [name, value] : yuvHints(representation)) {
+            attribs[idx++] = name;
+            attribs[idx++] = value;
         }
     }
 
@@ -793,7 +854,7 @@ bool CHyprOpenGLImpl::begin(CRenderContext& ctx, PHLMONITOR pMonitor, const CReg
 }
 
 void CHyprOpenGLImpl::end(CRenderContext& ctx) {
-    static auto PZOOMDISABLEAA = CConfigValue<Config::INTEGER>("cursor:zoom_disable_aa");
+    static auto PZOOMDISABLEAA = CConfigValue<Config::BOOL>("cursor:zoom_disable_aa");
     auto&       m_renderData   = ctx.m_data;
     const auto  PMONITOR       = m_renderData.pMonitor;
     TRACY_GPU_ZONE("RenderEnd");
@@ -934,7 +995,7 @@ void CHyprOpenGLImpl::end(CRenderContext& ctx) {
         },
         false);
 
-    static const auto GLDEBUG = CConfigValue<Config::INTEGER>("debug:gl_debugging");
+    static const auto GLDEBUG = CConfigValue<Config::BOOL>("debug:gl_debugging");
 
     if (*GLDEBUG) {
         // check for gl errors
@@ -955,7 +1016,6 @@ const std::array<std::string, SH_FRAG_LAST> FRAG_SHADERS = {
     "quad.frag",
     "passthru.frag",
     "rgbamatte.frag",
-    "ext.frag",
     "blur1.frag",
     "blur2.frag",
     "blurprepare.frag",
@@ -988,7 +1048,7 @@ const std::array<std::string, SH_FRAG_LAST> FRAG_SHADERS = {
 
 bool CHyprOpenGLImpl::initShaders(const std::string& path) {
     auto              shaders = makeShared<SPreparedShaders>();
-    static const auto PCM     = CConfigValue<Config::INTEGER>("render:cm_enabled");
+    static const auto PCM     = CConfigValue<Config::BOOL>("render:cm_enabled");
 
     try {
         auto shaderLoader = makeUnique<CShaderLoader>(SHADER_INCLUDES, FRAG_SHADERS, path);
@@ -1043,6 +1103,8 @@ void CHyprOpenGLImpl::applyScreenShader(const std::string& path) {
     }
 
     std::string fragmentShader((std::istreambuf_iterator<char>(infile)), (std::istreambuf_iterator<char>()));
+
+    scheduleShaderCompilerRelease();
 
     if (!m_finalScreenShader->createProgram(              //
             fragmentShader.starts_with("#version 320 es") // do not break existing custom shaders
@@ -1290,7 +1352,6 @@ void CHyprOpenGLImpl::passCMUniforms(WP<CShader> shader, const NColorManagement:
                                      const SCMSettings& settings) {
     shader->setUniformFloat2(SHADER_SRC_TF_RANGE, settings.srcTFRange.min, settings.srcTFRange.max);
     shader->setUniformFloat2(SHADER_DST_TF_RANGE, settings.dstTFRange.min, settings.dstTFRange.max);
-    shader->setUniformFloat(SHADER_SRC_REF_LUMINANCE, settings.srcRefLuminance);
     shader->setUniformFloat(SHADER_DST_REF_LUMINANCE, settings.dstRefLuminance);
     shader->setUniformFloat(SHADER_MAX_LUMINANCE, settings.maxLuminance);
     shader->setUniformFloat(SHADER_DST_MAX_LUMINANCE, settings.dstMaxLuminance);
@@ -1423,8 +1484,8 @@ WP<CShader> CHyprOpenGLImpl::renderScreenShaderInternal(CRenderContext& ctx) {
 }
 
 WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture> tex, const STextureRenderData& data, eTextureType texType, const CBox& newBox) {
-    static const auto  PENABLECM = CConfigValue<Config::INTEGER>("render:cm_enabled");
-    static auto        PBLEND    = CConfigValue<Config::INTEGER>("render:use_shader_blur_blend");
+    static const auto  PENABLECM = CConfigValue<Config::BOOL>("render:cm_enabled");
+    static auto        PBLEND    = CConfigValue<Config::BOOL>("render:use_shader_blur_blend");
 
     auto&              m_renderData = ctx.m_data;
 
@@ -1436,9 +1497,7 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
     switch (texType) {
         case TEXTURE_RGBA: shaderFeatures |= SH_FEAT_RGBA; break;
         case TEXTURE_RGBX: shaderFeatures &= ~SH_FEAT_RGBA; break;
-
-        // TODO set correct features
-        case TEXTURE_EXTERNAL: shader = getShaderVariant(SH_FRAG_EXT, SH_FEAT_ROUNDING | SH_FEAT_DISCARD | SH_FEAT_TINT | globalFeatures(ctx)); break; // might be unused
+        case TEXTURE_EXTERNAL: shaderFeatures |= SH_FEAT_EXTERNAL | (tex->m_opaque ? 0 : SH_FEAT_RGBA); break;
         default: RASSERT(false, "tex->m_iTarget unsupported!");
     }
 
@@ -1526,12 +1585,19 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
 
         shaderFeatures |= SH_FEAT_CM;
 
+        // the unmodified SDR copy of HDR content always needs an HDR -> SDR tonemap, even if the main target doesn't
+        const bool SRC_IS_HDR = settings.sourceTF == CM_TRANSFER_FUNCTION_ST2084_PQ || settings.sourceTF == CM_TRANSFER_FUNCTION_HLG ||
+            settings.sourceTF == CM_TRANSFER_FUNCTION_EXT_LINEAR || settings.sourceTF == CM_TRANSFER_FUNCTION_EXT_SRGB;
+        const bool MIRROR_ONLY_TONEMAP = !TARGET_IMAGE_DESCRIPTION->value().icc.present && !settings.needsTonemap && SRC_IS_HDR && (globalFeatures(ctx) & SH_FEAT_MIRROR);
+        // tonemap = off only applies to the main target, the mirror falls back to the default tonemapper
+        const int MIRROR_TONEMAP_MODE = settings.tonemapMode == 0 ? 1 : settings.tonemapMode;
+
         if (TARGET_IMAGE_DESCRIPTION->value().icc.present)
             shaderFeatures |= SH_FEAT_ICC;
         else {
-            if (settings.needsTonemap) {
+            if (settings.needsTonemap || MIRROR_ONLY_TONEMAP) {
                 shaderFeatures |= SH_FEAT_TONEMAP;
-                if (settings.tonemapMode == 3)
+                if ((MIRROR_ONLY_TONEMAP ? MIRROR_TONEMAP_MODE : settings.tonemapMode) == 3)
                     shaderFeatures |= SH_FEAT_ALT_TONEMAP;
             }
 
@@ -1544,6 +1610,10 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(CRenderContext& ctx, SP<ITexture
         shader = useShader(shader);
 
         passCMUniforms(shader, SOURCE_IMAGE_DESCRIPTION, TARGET_IMAGE_DESCRIPTION, true, ctx.m_data.pMonitor->m_sdrMinLuminance, ctx.m_data.pMonitor->m_sdrMaxLuminance, settings);
+
+        // negative mode tells the shader to skip the main tonemap and only tonemap the mirror
+        if (MIRROR_ONLY_TONEMAP)
+            shader->setUniformInt(SHADER_TONEMAP_MODE, -MIRROR_TONEMAP_MODE);
     } else {
         if (!shader)
             shader = getShaderVariant(SH_FRAG_SURFACE, shaderFeatures | globalFeatures(ctx));
@@ -1882,8 +1952,8 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
 
     TRACY_GPU_ZONE("RenderTextureWithBlur");
 
-    static auto PPROPORTIONAL = CConfigValue<Config::INTEGER>("decoration:blur:proportional");
-    static auto PBLEND        = CConfigValue<Config::INTEGER>("render:use_shader_blur_blend");
+    static auto PPROPORTIONAL = CConfigValue<Config::BOOL>("decoration:blur:proportional");
+    static auto PBLEND        = CConfigValue<Config::BOOL>("render:use_shader_blur_blend");
     const auto  NEEDS_STENCIL = data.discardMode != 0 && (!data.blockBlurOptimization || (data.discardMode & DISCARD_ALPHA));
     const bool  SHADERBLEND   = *PBLEND || data.forceBlurBlend;
     if (!SHADERBLEND && data.blurredBG) {
@@ -1929,7 +1999,7 @@ void CHyprOpenGLImpl::renderTextureWithBlurInternal(CRenderContext& ctx, SP<ITex
         // stencil done. Render everything.
         const CBox  monitorSpaceBox = box;
 
-        static auto PBLURIGNOREOPACITY = CConfigValue<Config::INTEGER>("decoration:blur:ignore_opacity");
+        static auto PBLURIGNOREOPACITY = CConfigValue<Config::BOOL>("decoration:blur:ignore_opacity");
 
         // handle ext-background-effect-v1 blur region if specified
         CRegion blurClipRegion = data.clipRegion;
@@ -2075,6 +2145,12 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
     shader->setUniformFloat(SHADER_ALPHA, data.a);
     shader->setUniformInt(SHADER_GRADIENT2_LENGTH, 0);
 
+    // Transformed sources are drawn into a cropped canvas, but the gradient stays monitor-relative.
+    const auto MONITOR_OFFSET = m_renderData.renderingTransformedSource ? box.pos() - innerBox.pos() : Vector2D{};
+    const auto GRADIENT_UV    = resolveBorderGradientUV(newBox, m_renderData.pMonitor->m_transformedSize, grad.m_wholeMonitor, MONITOR_OFFSET);
+    shader->setUniformFloat4(SHADER_GRADIENT_UV, GRADIENT_UV.x, GRADIENT_UV.y, GRADIENT_UV.w, GRADIENT_UV.h);
+    shader->setUniformFloat4(SHADER_GRADIENT2_UV, 0.F, 0.F, 1.F, 1.F);
+
     const auto TOPLEFT  = newBox.pos();
     const auto FULLSIZE = newBox.size();
 
@@ -2160,6 +2236,12 @@ void CHyprOpenGLImpl::renderBorder(CRenderContext& ctx, const CBox& box, const C
     shader->setUniformFloat(SHADER_ANGLE2, sc<int>(grad2.m_angle / (std::numbers::pi / 180.0)) % 360 * (std::numbers::pi / 180.0));
     shader->setUniformFloat(SHADER_ALPHA, data.a);
     shader->setUniformFloat(SHADER_GRADIENT_LERP, lerp);
+
+    const auto MONITOR_OFFSET = m_renderData.renderingTransformedSource ? box.pos() - innerBox.pos() : Vector2D{};
+    const auto GRADIENT_UV    = resolveBorderGradientUV(newBox, m_renderData.pMonitor->m_transformedSize, grad1.m_wholeMonitor, MONITOR_OFFSET);
+    const auto GRADIENT2_UV   = resolveBorderGradientUV(newBox, m_renderData.pMonitor->m_transformedSize, grad2.m_wholeMonitor, MONITOR_OFFSET);
+    shader->setUniformFloat4(SHADER_GRADIENT_UV, GRADIENT_UV.x, GRADIENT_UV.y, GRADIENT_UV.w, GRADIENT_UV.h);
+    shader->setUniformFloat4(SHADER_GRADIENT2_UV, GRADIENT2_UV.x, GRADIENT2_UV.y, GRADIENT2_UV.w, GRADIENT2_UV.h);
 
     const auto TOPLEFT  = newBox.pos();
     const auto FULLSIZE = newBox.size();
@@ -2604,6 +2686,8 @@ WP<CShader> CHyprOpenGLImpl::getShaderVariant(ePreparedFragmentShader frag, cons
 
         const auto fragSrc = g_pShaderLoader->getVariantSource(frag, variant);
 
+        scheduleShaderCompilerRelease();
+
         if (!shader->createProgram(m_shaders->TEXVERTSRC, fragSrc, true, true))
             LOG(Log::ERR, "shader features {} failed for {}", variant.features, FRAG_SHADERS[frag]);
 
@@ -2613,6 +2697,13 @@ WP<CShader> CHyprOpenGLImpl::getShaderVariant(ePreparedFragmentShader frag, cons
 
     ASSERT(it->second);
     return it->second;
+}
+
+static constexpr auto SHADER_COMPILER_RELEASE_DELAY = std::chrono::seconds(10);
+
+// compiles tend to come in bursts, release once they've settled
+void CHyprOpenGLImpl::scheduleShaderCompilerRelease() {
+    m_shaderCompilerReleaseTimer->updateTimeout(SHADER_COMPILER_RELEASE_DELAY);
 }
 
 std::vector<SDRMFormat> CHyprOpenGLImpl::getDRMFormats() {

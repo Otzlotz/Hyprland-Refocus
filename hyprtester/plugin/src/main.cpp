@@ -66,6 +66,7 @@ extern "C" {
 #include "XWaylandSelection.hpp"
 #include "XWaylandPointer.hpp"
 #include "TouchGrab.hpp"
+#include "FractionalSubsurface.hpp"
 
 // Do NOT change this function.
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -458,7 +459,7 @@ static SDispatchResult probeWorkspaceBackground(Render::CRenderContext& ctx, PHL
     });
     renderer.renderAllClientsForWorkspace(ctx, monitor, withWorkspace ? monitor->m_activeWorkspace : nullptr, Time::steadyNow());
 
-    const bool                WALLPAPER = !withWorkspace || !*CConfigValue<Config::INTEGER>("render:xp_mode");
+    const bool                WALLPAPER = !withWorkspace || !*CConfigValue<Config::BOOL>("render:xp_mode");
     std::vector<eRenderStage> expected;
     if (WALLPAPER)
         expected.emplace_back(RENDER_POST_WALLPAPER);
@@ -1906,6 +1907,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     XWaylandSelection::registerFunctions();
     XWaylandPointer::registerFunctions();
     TouchGrab::registerFunctions();
+    FractionalSubsurface::registerFunctions();
 
     // init mouse
     g_mouse = CTestMouse::create(false);
@@ -1923,6 +1925,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    FractionalSubsurface::reset();
     WorkspaceGestures::reset();
     SpecialWorkspaceGestures::reset();
     restoreCursorFixture();
